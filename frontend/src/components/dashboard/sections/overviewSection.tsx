@@ -1,139 +1,156 @@
-export const renderOverviewSection = (ctx: any) => {
-  const {
-    SectionTitle,
-    IntegrationChecklistWidget,
-    overviewSectionRefs,
-    themePanelClass,
-    themePanelCompactClass,
-    currentRealtimeStats,
-    RealTimeCard,
-    compareMode,
-    setCompareMode,
-    selectedRange,
-    setSelectedRange,
-    selectedRealtimeId,
-    setSelectedRealtimeId,
-    openDownloadModal,
-    Download,
-    mockFinancialOverview,
-    DonutChart,
-    mockConversionFunnel,
-    FunnelVisualizer,
-    handleConversionsPlatformDownload,
-    productCategory,
-    setProductCategory,
-    productCategories,
-    filteredProductPerformance,
-    TrendingUp,
-    mockConversionPlatforms,
-    conversionConnectionStatus,
-    ConversionPlatformBars,
-    mockLtvTrend,
-    LtvComparisonChart,
-    ArrowUpRight,
-  } = ctx;
+import React from 'react';
+import { ArrowUpRight, Download, Loader2, TrendingUp } from 'lucide-react';
+import SectionTitle from '../SectionTitle';
+import { OverviewDashboardData } from '../../../types/dashboard';
+
+type DownloadButtonProps = {
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+  iconClassName?: string;
+  style?: React.CSSProperties;
+};
+
+const downloadPillStyle: React.CSSProperties = {
+  color: 'var(--theme-text)',
+  border: '1px solid rgba(255,255,255,0.1)',
+  backgroundColor: 'transparent',
+};
+
+const DownloadButton: React.FC<DownloadButtonProps> = ({
+  title,
+  onClick,
+  disabled,
+  className,
+  iconClassName = 'h-3.5 w-3.5',
+  style,
+}) => (
+  <button
+    className={
+      className ||
+      'inline-flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-md transition-all download-pill hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed'
+    }
+    style={style || downloadPillStyle}
+    title={title}
+    onClick={onClick}
+    disabled={disabled}
+  >
+    <Download className={iconClassName} />
+    Download
+  </button>
+);
+
+export type OverviewSectionRefs = {
+  integrations: React.RefObject<HTMLDivElement>;
+  aiSummaries: React.RefObject<HTMLDivElement>;
+  performance: React.RefObject<HTMLDivElement>;
+  conversionsPlatform: React.RefObject<HTMLDivElement>;
+};
+
+export type OverviewSectionProps = {
+  // Logic Props
+  data: OverviewDashboardData | null;
+  loading: boolean;
+
+  // UI/Theme Props
+  themePanelClass: string;
+  themePanelCompactClass: string;
+  overviewSectionRefs: OverviewSectionRefs;
+
+  // Components Dependencies
+  IntegrationChecklistWidget?: React.ComponentType<{ containerRef?: React.RefObject<HTMLDivElement> }>;
+  ConnectionsInProgressWidget?: React.ComponentType;
+  RealTimeCard: React.ComponentType<any>;
+  DonutChart: React.ComponentType<any>;
+  FunnelVisualizer: React.ComponentType<any>;
+  ConversionPlatformBars: React.ComponentType<any>;
+  LtvComparisonChart: React.ComponentType<any>;
+
+  // Interaction Handlers
+  compareMode: string;
+  selectedRealtimeId: string;
+  setSelectedRealtimeId: (id: string) => void;
+  openDownloadModal: (title: string) => void;
+  handleConversionsPlatformDownload: () => void;
+  handleActiveCampaignMonitorDownload: () => void;
+
+  // Legacy/Compatibility props
+  conversionConnectionStatus: any;
+  hasConnectedConversionPlatform: boolean;
+
+  // Unused props but kept for interface compatibility if needed by parent (though should be cleaned up)
+  TrendingUp?: React.ComponentType<any>;
+};
+
+const OverviewSection: React.FC<OverviewSectionProps> = ({
+  data,
+  loading,
+  IntegrationChecklistWidget,
+  ConnectionsInProgressWidget,
+  overviewSectionRefs,
+  themePanelClass,
+  themePanelCompactClass,
+  RealTimeCard,
+  compareMode,
+  selectedRealtimeId,
+  setSelectedRealtimeId,
+  openDownloadModal,
+  DonutChart,
+  FunnelVisualizer,
+  handleConversionsPlatformDownload,
+  handleActiveCampaignMonitorDownload,
+  conversionConnectionStatus,
+  ConversionPlatformBars,
+  LtvComparisonChart,
+}) => {
+
+  const ChecklistWidget = IntegrationChecklistWidget || ConnectionsInProgressWidget;
+
+  // --- Loading State ---
+  if (loading) {
+    return (
+      <div className="space-y-8 min-h-[600px] flex flex-col justify-center items-center">
+        <Loader2 className="h-10 w-10 animate-spin text-indigo-500/50" />
+        <p className="text-sm font-medium text-gray-400 animate-pulse">Loading dashboard insights...</p>
+      </div>
+    );
+  }
+
+  // --- Empty State ---
+  if (!data) {
+    return (
+      <div className="space-y-8 p-20 text-center">
+        <p className="text-gray-400">Unable to load dashboard data.</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-10 pb-12">
       {/* Integration Checklist Widget */}
-      <IntegrationChecklistWidget />
-
-      {/* Key Metrics Cards */}
-      <div
-        ref={overviewSectionRefs.aiSummaries}
-        className={`${themePanelClass} shadow-sm hover:shadow-lg transition-all duration-300`}
-      >
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-[24px] font-bold theme-text">AI summaries</p>
-            <p className="text-[18px] theme-muted">Core metrics overview</p>
-          </div>
-          <button className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-all duration-200 hover:shadow-lg hover:scale-105 active:scale-95">
-            View all
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="theme-panel-soft rounded-2xl p-4 space-y-2 hover:shadow-md transition-all duration-300 hover:scale-105 cursor-pointer group">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase theme-muted group-hover:text-blue-400 transition-colors">Total Revenue</p>
-              <span className="text-xs font-semibold text-blue-400 group-hover:scale-110 transition-transform">+15.3%</span>
-            </div>
-            <p className="text-[18px] font-bold theme-text group-hover:text-blue-300 transition-colors">THB 2.45M</p>
-            <p className="text-xs theme-muted">From last period</p>
-          </div>
-
-          <div className="theme-panel-soft rounded-2xl p-4 space-y-2 hover:shadow-md transition-all duration-300 hover:scale-105 cursor-pointer group">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase theme-muted group-hover:text-emerald-300 transition-colors">Total Orders</p>
-              <span className="text-xs text-emerald-300 font-semibold group-hover:scale-110 transition-transform">+8.2%</span>
-            </div>
-            <p className="text-[18px] font-bold theme-text group-hover:text-emerald-200 transition-colors">1,284</p>
-            <p className="text-xs theme-muted">From last period</p>
-          </div>
-
-          <div className="theme-panel-soft rounded-2xl p-4 space-y-2 hover:shadow-md transition-all duration-300 hover:scale-105 cursor-pointer group">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase theme-muted group-hover:text-purple-300 transition-colors">Avg Order Value</p>
-              <span className="text-xs text-purple-300 font-semibold group-hover:scale-110 transition-transform">+6.8%</span>
-            </div>
-            <p className="text-[18px] font-bold theme-text group-hover:text-purple-200 transition-colors">THB 1,908</p>
-            <p className="text-xs theme-muted">From last period</p>
-          </div>
-
-          <div className="theme-panel-soft rounded-2xl p-4 space-y-2 hover:shadow-md transition-all duration-300 hover:scale-105 cursor-pointer group">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase theme-muted group-hover:text-orange-300 transition-colors">Conversion Rate</p>
-              <span className="text-xs text-orange-300 font-semibold group-hover:scale-110 transition-transform">+2.1%</span>
-            </div>
-            <p className="text-[18px] font-bold theme-text group-hover:text-orange-200 transition-colors">4.8%</p>
-            <p className="text-xs theme-muted">From last period</p>
-          </div>
-        </div>
-      </div>
+      {ChecklistWidget ? <ChecklistWidget /> : null}
 
       <section className={themePanelClass}>
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-6 mb-8">
           <SectionTitle title="Overview Dashboard" subtitle="Real-time marketing performance insights" />
-          <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
-            <span className="uppercase text-gray-400">Range</span>
-            {(['Today', '7D', '30D'] as const).map((range) => (
-              <button
-                key={range}
-                onClick={() => setSelectedRange(range)}
-                className={`rounded-full border px-3 py-1 font-semibold ${selectedRange === range ? 'bg-gray-700 text-white border-gray-700' : 'border-gray-200 text-gray-700'}`}
-              >
-                {range}
-              </button>
-            ))}
-            <span className="ml-4 uppercase text-gray-400">Compare</span>
-            {(['previous', 'target'] as const).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setCompareMode(mode)}
-                className={`rounded-full border px-3 py-1 font-semibold capitalize ${compareMode === mode ? 'bg-gray-700 text-white border-gray-700' : 'border-gray-200 text-gray-700'}`}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
         </div>
 
-        <div className={`${themePanelClass} shadow-sm hover:shadow-lg transition-all duration-300`}>
-          <div className="flex items-center justify-between">
+        {/* 1. Real-Time Analytics */}
+        <div className={`${themePanelClass} shadow-sm hover:shadow-md transition-shadow duration-300 p-6 rounded-xl`}>
+          <div className="flex items-center justify-between mb-6">
             <div>
-              <p className="text-[20px] font-semibold theme-text">Real-Time Analytics</p>
-              <p className="text-base theme-muted">Monitors live marketing signals</p>
+              <h3 className="text-xl font-semibold tracking-tight theme-text">Real-Time Analytics</h3>
+              <p className="text-sm text-gray-500 mt-1">Monitors live marketing signals</p>
             </div>
-            <p className="text-xs theme-muted">+6.5% vs last period</p>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {currentRealtimeStats.map((stat: any) => (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {data.realtimeMessages.map((stat) => (
               <RealTimeCard
                 key={stat.id}
                 label={stat.label}
                 value={stat.value}
-                delta={compareMode === 'previous' ? stat.delta : stat.deltaTarget || stat.delta}
+                delta={stat.delta}
                 positive={stat.positive}
                 active={stat.id === selectedRealtimeId}
                 onSelect={() => setSelectedRealtimeId(stat.id)}
@@ -142,271 +159,245 @@ export const renderOverviewSection = (ctx: any) => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className={`${themePanelClass} shadow-xl`}>
-            <div className="flex flex-wrap items-start justify-between gap-4">
+        {/* 2. Key Metrics Cards (AI Summaries) */}
+        <div
+          ref={overviewSectionRefs.aiSummaries}
+          className={`${themePanelClass} shadow-sm hover:shadow-md transition-shadow duration-300 p-6 rounded-xl mt-8`}
+        >
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-xl font-semibold tracking-tight theme-text">AI Summaries</h3>
+              <p className="text-sm text-gray-500 mt-1">Core metrics efficiency</p>
+            </div>
+
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {data.aiSummaries.map((metric) => (
+              <div key={metric.id} className="theme-panel rounded-xl p-5 border border-transparent hover:border-gray-100 dark:hover:border-gray-800 transition-all duration-300 hover:shadow-lg hover:-translate-y-1 cursor-pointer group">
+                <div className="flex items-center justify-between mb-3">
+                  <p className={`text-xs font-bold uppercase tracking-wider text-gray-400 group-hover:text-${metric.accentColor || 'indigo'}-500 transition-colors`}>{metric.label}</p>
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full bg-${metric.positive ? 'emerald' : 'rose'}-500/10 text-${metric.positive ? 'emerald' : 'rose'}-500`}>
+                    {metric.delta}
+                  </span>
+                </div>
+                <p className="text-2xl font-bold tracking-tight theme-text mb-1">{metric.value}</p>
+                <p className="text-xs text-gray-400">{metric.periodLabel}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 3. Financial & Funnel */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
+          <div className={`${themePanelClass} shadow-lg p-6 rounded-xl`}>
+            <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
               <div className="space-y-1">
-                <p className="text-[18px] font-bold flex items-center gap-3" style={{ color: 'var(--theme-text)' }}>
-                  <i className="fa-solid fa-chart-simple text-indigo-400 text-xl" /> Financial Overview
-                </p>
-                <p className="text-sm font-medium" style={{ color: 'var(--theme-muted)' }}>
-                  ROI {mockFinancialOverview.roi} ({mockFinancialOverview.roiChange})
+                <h3 className="text-lg font-bold flex items-center gap-2 theme-text">
+                  <span className="w-1.5 h-6 bg-indigo-500 rounded-full inline-block"></span>
+                  Financial Overview
+                </h3>
+                <p className="text-sm font-medium text-gray-500 pl-3.5">
+                  ROI <span className="text-indigo-500">{data.financial.roi}</span> <span className="text-xs text-gray-400">({data.financial.roiChange})</span>
                 </p>
               </div>
-              <button
-                className="inline-flex items-center gap-2 text-sm font-medium px-3 py-1 rounded-lg transition-colors download-pill"
-                style={{
-                  color: 'var(--theme-text)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  backgroundColor: 'transparent',
-                }}
-                title="Download financial overview"
-                onClick={() => openDownloadModal('Financial Overview')}
-              >
-                <Download className="h-4 w-4" />
-                Download
-              </button>
+              <DownloadButton title="Download financial overview" onClick={() => openDownloadModal('Financial Overview')} />
             </div>
-            <div className="flex items-center justify-center">
-              <DonutChart segments={mockFinancialOverview.breakdown} />
+            <div className="flex items-center justify-center py-4">
+              <DonutChart segments={data.financial.breakdown} />
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 text-sm">
-              {[
-                {
-                  label: 'Total Revenue',
-                  value: mockFinancialOverview.revenue,
-                  delta: mockFinancialOverview.revenueChange,
-                  accent: 'rgba(16,185,129,0.7)',
-                },
-                {
-                  label: 'Total Profit',
-                  value: mockFinancialOverview.profit,
-                  delta: mockFinancialOverview.profitChange,
-                  accent: 'rgba(96,165,250,0.7)',
-                },
-                {
-                  label: 'Total Cost',
-                  value: mockFinancialOverview.cost,
-                  delta: mockFinancialOverview.costChange,
-                  accent: 'rgba(248,113,113,0.7)',
-                },
-              ].map((card: any) => (
-                <div key={card.label} className="theme-panel-soft rounded-2xl p-4 space-y-2 border">
-                  <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--theme-muted)' }}>
-                    {card.label}
+            <div className="grid grid-cols-3 gap-4 pt-6 text-center border-t border-gray-100 dark:border-gray-800 border-dashed">
+              {data.financial.details.map((card: any) => (
+                <div key={card.label} className="space-y-1">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">
+                    {card.label.replace('Total ', '')}
                   </p>
-                  <p className="text-2xl font-semibold" style={{ color: 'var(--theme-text)' }}>
-                    THB {card.value.toLocaleString('en-US')}
+                  <p className="text-lg font-bold theme-text tracking-tight">
+                    ${card.value.toLocaleString('en-US')}
                   </p>
-                  <p className="text-sm font-semibold" style={{ color: card.accent }}>
+                  <p className="text-xs font-medium" style={{ color: card.accent }}>
                     {card.delta}
                   </p>
                 </div>
               ))}
             </div>
           </div>
-          <div className={`${themePanelClass} shadow-sm`}>
-            <div className="flex flex-wrap items-start justify-between gap-4">
+
+          <div className="rounded-3xl p-6 border border-white/10 bg-gradient-to-br from-[#0b1220] via-[#0b1220] to-[#101a33] shadow-lg">
+            <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
               <div className="space-y-1">
-                <p className="text-[18px] font-bold theme-text">User Conversion Funnel</p>
-                <p className="text-sm theme-muted">Track user journey through conversion stages</p>
+                <h3 className="text-lg font-bold text-white">Conversion Funnel</h3>
+                <p className="text-sm text-sky-200/80">User journey effectiveness</p>
               </div>
-              <button
-                className="inline-flex items-center gap-2 text-sm font-medium px-3 py-1 rounded-lg transition-colors download-pill"
-                style={{
-                  color: 'var(--theme-text)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  backgroundColor: 'transparent',
-                }}
+              <DownloadButton
                 title="Download funnel data"
                 onClick={() => openDownloadModal('User Conversion Funnel')}
-              >
-                <Download className="h-4 w-4" />
-                Download
-              </button>
+                className="inline-flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-md transition-all download-pill hover:bg-white/10"
+                style={{ color: '#fff', border: '1px solid rgba(255,255,255,0.14)', backgroundColor: 'transparent' }}
+              />
             </div>
-            <FunnelVisualizer steps={mockConversionFunnel} />
+            <div className="py-2">
+              <FunnelVisualizer steps={data.conversionFunnel} variant="dark" />
+            </div>
           </div>
         </div>
 
-        <div ref={overviewSectionRefs.performance} className={`${themePanelCompactClass} space-y-5`}>
+        {/* 4. Active Campaign Monitor */}
+        <div ref={overviewSectionRefs.performance} className={`${themePanelCompactClass} bg-white space-y-6 p-6 rounded-xl mt-8 border border-gray-100`}>
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <p className="text-[20px] font-bold theme-text flex items-center gap-2">
+              <h3 className="text-xl font-bold theme-text flex items-center gap-2">
                 <TrendingUp className="h-5 w-5 text-indigo-500" />
-                Conversions Platform
-              </p>
-              <p className="theme-muted" style={{ fontSize: '16px' }}>
-                Performance breakdown by platform
+                Active Campaign Monitor
+              </h3>
+              <p className="text-sm text-gray-500 mt-1">
+                Real-time performance snapshot
               </p>
             </div>
-            <div className="flex items-center gap-3">
-              <button
-                className="inline-flex items-center gap-2 text-sm font-medium px-3 py-1 rounded-lg transition-colors download-pill"
-                style={{
-                  color: 'var(--theme-text)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  backgroundColor: 'transparent',
-                  marginTop: '18px',
-                }}
-                title="Download conversions platform data (CSV)"
-                onClick={handleConversionsPlatformDownload}
-              >
-                <Download className="h-3.5 w-3.5" />
-                Download
-              </button>
-              <div className="flex flex-col gap-0.5">
-                <label className="text-gray-500 uppercase text-[11px]">Category</label>
-                <select
-                  value={productCategory}
-                  onChange={(event: any) => setProductCategory(event.target.value)}
-                  className="rounded-full border border-gray-200 bg-white px-4 py-2 font-semibold text-gray-800 text-base focus:outline-none"
-                >
-                  {productCategories.map((category: any) => (
-                    <option key={category} value={category}>
-                      {category}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
+            <DownloadButton
+              title="Download CSV"
+              onClick={() => handleActiveCampaignMonitorDownload()}
+            />
           </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-base table-fixed">
-              <thead>
-                <tr className="text-left text-sm uppercase text-gray-400">
-                  <th className="py-3 pr-6 whitespace-nowrap font-semibold text-sm">Product Name</th>
-                  <th className="py-3 pr-6 whitespace-nowrap font-semibold text-sm">Category</th>
-                  <th className="py-3 pr-6 whitespace-nowrap font-semibold text-sm">Sales</th>
-                  <th className="py-3 pr-6 whitespace-nowrap font-semibold text-sm">Revenue</th>
-                  <th className="py-3 pr-6 whitespace-nowrap font-semibold text-sm">Stock</th>
-                  <th className="py-3 pr-6 whitespace-nowrap font-semibold text-sm w-1/6">Status</th>
+
+          <div className="overflow-hidden rounded-lg border border-gray-200">
+            <table className="min-w-full text-sm">
+              <thead className="bg-white text-gray-700 border-b border-gray-200">
+                <tr>
+                  <th className="py-4 px-6 text-left font-bold text-xs uppercase tracking-wider opacity-90">Campaign Name</th>
+                  <th className="py-4 px-6 text-left font-bold text-xs uppercase tracking-wider opacity-90">Platform</th>
+                  <th className="py-4 px-6 text-right font-bold text-xs uppercase tracking-wider opacity-90">Conversions</th>
+                  <th className="py-4 px-6 text-right font-bold text-xs uppercase tracking-wider opacity-90">CPA</th>
+                  <th className="py-4 px-6 text-right font-bold text-xs uppercase tracking-wider opacity-90">Budget</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
-                {filteredProductPerformance.map((product: any) => (
-                  <tr
-                    key={product.name}
-                    className="group text-gray-600 hover:bg-orange-500 hover:text-white hover:shadow-sm transition-colors duration-150 cursor-pointer"
-                  >
-                    <td className="py-4 pr-6 font-semibold text-gray-900 group-hover:text-white">{product.name}</td>
-                    <td className="py-4 pr-6 text-gray-600 font-semibold text-base group-hover:text-white">{product.category}</td>
-                    <td className="py-4 pr-6 whitespace-nowrap font-semibold group-hover:text-white">{product.sales.toLocaleString('en-US')}</td>
-                    <td className="py-4 pr-6 whitespace-nowrap font-semibold group-hover:text-white">THB {product.revenue.toLocaleString('en-US')}</td>
-                    <td className="py-4 pr-6 text-gray-600 font-semibold text-base group-hover:text-white">{product.stock}</td>
-                    <td className="py-4 pr-6 w-1/6">
-                      <span className="px-6 py-2.5 rounded-full text-[10px] font-bold uppercase bg-gray-700 text-white group-hover:bg-white group-hover:text-orange-700">
-                        {product.status}
-                      </span>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {data.activeCampaigns.length > 0 ? (
+                  data.activeCampaigns.map((campaign, idx) => (
+                    <tr
+                      key={campaign.id || idx}
+                      className="group"
+                    >
+                      <td className="py-4 px-6 font-semibold text-gray-800">
+                        {campaign.campaignName}
+                      </td>
+                      <td className="py-4 px-6">
+                        <span className="inline-flex items-center px-2.5 py-1 rounded bg-[#1e293b] text-white text-xs font-medium border border-gray-600 shadow-sm">
+                          {campaign.platform}
+                        </span>
+                      </td>
+                      <td className="py-4 px-6 text-right font-semibold text-gray-700">
+                        {Number(campaign.conversions ?? 0).toLocaleString('en-US')}
+                      </td>
+                      <td className="py-4 px-6 text-right font-medium text-gray-600">
+                        ${Number(campaign.cpa ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-4 px-6 text-right font-medium text-gray-600">
+                        ${Number(campaign.budget ?? 0).toLocaleString('en-US')}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={5} className="py-12 text-center text-gray-400 text-sm">
+                      No active campaigns found
                     </td>
                   </tr>
-                ))}
+                )}
               </tbody>
             </table>
           </div>
-          <div className="flex justify-center pt-4">
-            <button className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors">
-              Learn more
-            </button>
-          </div>
         </div>
 
-        <div className="flex flex-col lg:flex-row gap-4 mt-2">
-          <div className={`${themePanelClass} shadow-sm lg:basis-[35%] lg:max-w-[35%]`}>
-            <div className="space-y-2">
-              <div className="flex items-start justify-between gap-3">
+
+
+
+        {/* 5. Conversions Platform & LTV:CAC */}
+        < div className="flex flex-col lg:flex-row gap-8 mt-8" >
+          <div
+            ref={overviewSectionRefs.conversionsPlatform}
+            className={`${themePanelClass} shadow-sm p-6 rounded-xl lg:basis-[40%] lg:max-w-[40%]`}
+          >
+            <div className="flex items-start justify-between gap-3 mb-6">
+              <div>
+                <h3 className="text-lg font-bold theme-text flex items-center gap-2">
+                  <TrendingUp className="h-5 w-5 text-indigo-500" />
+                  Conversions Platform
+                </h3>
+                <p className="text-sm text-gray-500">By platform breakdown</p>
+              </div>
+              <DownloadButton
+                title="Download CSV"
+                onClick={() => handleConversionsPlatformDownload()}
+                disabled={data.conversionPlatforms.length === 0}
+              />
+            </div>
+
+            {data.conversionPlatforms.length > 0 ? (
+              <ConversionPlatformBars data={data.conversionPlatforms} connectionStatus={conversionConnectionStatus} />
+            ) : (
+              <div className="py-12 text-center text-sm theme-muted border-2 border-dashed border-gray-100 rounded-lg">
+                Connect a platform to see data
+              </div>
+            )}
+          </div>
+
+          <div className={`${themePanelClass} p-6 rounded-xl shadow-sm space-y-6 lg:basis-[60%] lg:max-w-[60%]`}>
+            <div className="w-full">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <h3 className="text-lg font-bold theme-text">LTV : CAC Ratio</h3>
+                <DownloadButton
+                  title="Download Data"
+                  onClick={() => openDownloadModal('LTV : CAC Ratio')}
+                />
+              </div>
+              <LtvComparisonChart data={data.ltvCac.trend} />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-4 border-t border-gray-100 dark:border-gray-800">
+              <div className="flex items-center gap-4">
+                <div className="p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg">
+                  <TrendingUp className="h-6 w-6 text-indigo-600" />
+                </div>
                 <div>
-                  <p className="text-[20px] font-bold theme-text flex items-center gap-2">
-                    <TrendingUp className="h-5 w-5 text-indigo-500" />
-                    Conversions Platform
-                  </p>
-                  <p className="text-sm theme-muted">Performance breakdown by platform</p>
+                  <p className="text-xs font-semibold uppercase text-gray-500 tracking-wider">Current Ratio</p>
+                  <div className="flex items-baseline gap-2">
+                    <p className="text-2xl font-bold theme-text">{data.ltvCac.currentRatio}x</p>
+                    <span className="text-xs font-medium text-emerald-500 flex items-center">
+                      <ArrowUpRight className="h-3 w-3 mr-0.5" />
+                      {data.ltvCac.movement}
+                    </span>
+                  </div>
                 </div>
-                <button
-                  className="inline-flex items-center gap-2 text-sm font-medium px-3 py-1 rounded-lg transition-colors download-pill"
-                  style={{
-                    color: 'var(--theme-text)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    backgroundColor: 'transparent',
-                  }}
-                  title="Download conversions platform data (CSV)"
-                  onClick={handleConversionsPlatformDownload}
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Download
-                </button>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-sm mb-1">
+                  <span className="text-gray-500">Avg. LTV</span>
+                  <span className="font-bold theme-text">${data.ltvCac.avgLtv}</span>
+                </div>
+                <div className="w-full bg-gray-100 rounded-full h-2">
+                  <div className="bg-emerald-500 h-2 rounded-full" style={{ width: '75%' }}></div>
+                </div>
+
+                <div className="flex justify-between text-sm mt-3 mb-1">
+                  <span className="text-gray-500">Avg. CAC</span>
+                  <span className="font-bold theme-text">${data.ltvCac.avgCac}</span>
+                </div>
+                <div className="w-full bg-gray-100 rounded-full h-2">
+                  <div className="bg-orange-400 h-2 rounded-full" style={{ width: '25%' }}></div>
+                </div>
               </div>
             </div>
-            <ConversionPlatformBars data={mockConversionPlatforms} connectionStatus={conversionConnectionStatus} />
+
+            <p className="text-xs text-gray-400 leading-relaxed pt-2">
+              <span className="font-semibold text-gray-500">Insight:</span> When the ratio stays above target, your acquisition budget is creating sustained lifetime value.
+            </p>
           </div>
-          <div className={`${themePanelClass} p-5 space-y-5 lg:basis-[65%] lg:max-w-[65%]`}>
-            <div className="w-full pt-2">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-[18px] font-bold theme-text">LTV : CAC Ratio</p>
-                <div className="flex items-center gap-2 text-xs">
-                  <span
-                    className="rounded-full font-semibold px-3 py-1 border"
-                    style={{ backgroundColor: 'var(--surface-muted)', color: 'var(--theme-text)', borderColor: 'var(--theme-border)' }}
-                  >
-                    Healthy
-                  </span>
-                  <button
-                    className="inline-flex items-center gap-2 text-sm font-medium px-3 py-1 rounded-lg transition-colors download-pill"
-                    style={{
-                      color: 'var(--theme-text)',
-                      border: '1px solid rgba(255,255,255,0.1)',
-                      backgroundColor: 'transparent',
-                    }}
-                    title="Download LTV : CAC data"
-                    onClick={() => openDownloadModal('LTV : CAC Ratio')}
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    Download
-                  </button>
-                </div>
-              </div>
-              <LtvComparisonChart data={mockLtvTrend} />
-            </div>
-            <div className="flex flex-col gap-4">
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center gap-7">
-                  <div className="space-y-1">
-                    <p className="uppercase text-sm theme-muted">Current Ratio</p>
-                    <p className="text-[14px] font-semibold theme-text leading-tight">3.4x</p>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="uppercase text-sm theme-muted">Movement</p>
-                    <p className="text-[12px] font-semibold flex items-center gap-1" style={{ color: 'var(--accent-color)' }}>
-                      <ArrowUpRight className="h-4 w-4" />
-                      +0.2 vs last month
-                    </p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-                  <div className="theme-panel-soft rounded-2xl border px-3.5 py-3 transition shadow-sm hover:shadow-md">
-                    <p className="uppercase text-xs sm:text-sm theme-muted tracking-wide font-semibold">Avg. LTV</p>
-                    <p className="mt-1 text-3xl font-semibold" style={{ color: 'var(--accent-color)' }}>
-                      THB 520
-                    </p>
-                  </div>
-                  <div className="theme-panel-soft rounded-2xl border px-3.5 py-3 transition shadow-sm hover:shadow-md">
-                    <p className="uppercase text-xs sm:text-sm theme-muted tracking-wide font-semibold">Avg. CAC</p>
-                    <p className="mt-1 text-3xl font-semibold" style={{ color: 'var(--theme-text)' }}>
-                      THB 150
-                    </p>
-                  </div>
-                </div>
-              </div>
-              <div className="space-y-2 text-[14px] leading-relaxed">
-                <span className="uppercase text-[11px] font-semibold tracking-wide theme-text opacity-80">Goal</span>
-                <p className="theme-text opacity-70 text-[12px]">
-                  When the ratio stays above target, your acquisition budget is creating enough lifetime value. If this dips towards the goal, consider shifting spend to high LTV channels or improving retention.
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
+        </div >
+      </section >
+    </div >
   );
 };
+
+export default OverviewSection;

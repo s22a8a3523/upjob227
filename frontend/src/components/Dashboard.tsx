@@ -1,21 +1,27 @@
 import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { useMetrics, useCampaigns } from '../hooks/useApi';
+import { useOverviewData } from '../hooks/useOverviewData';
 import { getIntegrations, updateIntegration } from '../services/api';
 import { useIntegrationNotifications } from '../hooks/useIntegrationNotifications';
 import { Integration } from '../types/api';
 import api from '../services/api';
 import DashboardShell, { ThemeTokens } from './dashboard/DashboardShell';
+import SectionTitle from './dashboard/SectionTitle';
+import StatCard from './dashboard/StatCard';
+import RealTimeCard from './dashboard/RealTimeCard';
+import DataRefreshCard from './dashboard/DataRefreshCard';
 import AI from './AI';
-import { renderOverviewSection } from './dashboard/sections/overviewSection';
-import { renderCampaignSection } from './dashboard/sections/campaignSection';
-import { renderSeoSection } from './dashboard/sections/seoSection';
-import { renderCommerceSection } from './dashboard/sections/commerceSection';
-import { renderCrmSection } from './dashboard/sections/crmSection';
-import { renderTrendSection } from './dashboard/sections/trendSection';
-import { renderSettingsSection } from './dashboard/sections/settingsSection';
-import { renderReportsSection } from './dashboard/sections/reportsSection';
+import OverviewSection from './dashboard/sections/overviewSection';
+import CampaignSection from './dashboard/sections/campaignSection';
+import SeoSection from './dashboard/sections/seoSection';
+import CommerceSection from './dashboard/sections/commerceSection';
+import CrmSection from './dashboard/sections/crmSection';
+import TrendSection from './dashboard/sections/trendSection';
+import SettingsSection from './dashboard/sections/settingsSection';
+import ReportsSection from './dashboard/sections/reportsSection';
 import {
   LayoutDashboard,
   BarChart3,
@@ -28,8 +34,6 @@ import {
   TrendingUp,
   Filter,
   RefreshCw,
-  ArrowUpRight,
-  ArrowDownRight,
   CheckSquare,
   Share2,
   Bell,
@@ -117,6 +121,7 @@ import {
   mockConversionFunnel,
   mockLtvTrend,
   mockConversionPlatforms,
+  mockActiveCampaignMonitor,
   ltvCacData,
   ltvCacColors,
   currentGoal,
@@ -128,6 +133,7 @@ import {
   KPI_CONDITION_OPTIONS,
   KPI_METRIC_SUMMARY,
 } from '../data/mockDashboard';
+import { useCurrentUser } from '../hooks/useCurrentUser';
 
 type SectionKey =
   | 'overview'
@@ -149,7 +155,13 @@ type SettingsData = {
   alerts: typeof mockSettingsAlerts;
 };
 
-type ThemeName = 'Light' | 'Dark' | 'Canvas';
+type KpiSettingRow = SettingsData['kpis'][number];
+type IntegrationSettingRow = SettingsData['integrations'][number];
+type UserSettingRow = SettingsData['users'][number];
+type AlertTypeSettingRow = SettingsData['alerts']['alertTypes'][number];
+type DeliveryChannelSettingRow = SettingsData['alerts']['deliveryChannels'][number];
+
+type ThemeName = 'Light' | 'Dark';
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 
@@ -214,6 +226,16 @@ const adjustHexColor = (hex: string | undefined, amount = 0) => {
   return `#${((1 << 24) + (Math.round(r) << 16) + (Math.round(g) << 8) + Math.round(b)).toString(16).slice(1)}`;
 };
 
+const formatCompactInteger = (value: number) => {
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+
+  if (abs < 1000) return `${sign}${Math.round(abs)}`;
+  if (abs < 1_000_000) return `${sign}${Math.round(abs / 1000)}K`;
+  if (abs < 1_000_000_000) return `${sign}${Math.round(abs / 1_000_000)}M`;
+  return `${sign}${Math.round(abs / 1_000_000_000)}B`;
+};
+
 const normalizeColorInput = (value: string) => normalizeHex(value);
 
 const accentGradient = (hex: string | undefined, startAlpha = 0.12, endAlpha = 0.35) =>
@@ -228,7 +250,52 @@ const themePanelClass = `${themePanelBase} p-6 space-y-6`;
 const themePanelTightClass = `${themePanelBase} p-6 space-y-4`;
 const themePanelCompactClass = `${themePanelBase} p-5 space-y-4`;
 
-const themeOptions: ThemeName[] = ['Light', 'Dark', 'Canvas'];
+const DASHBOARD_HEADER_OFFSET_PX = 96;
+const DASHBOARD_SCROLL_RETRY_MAX_ATTEMPTS = 30;
+const DASHBOARD_SCROLL_RETRY_DELAY_MS = 50;
+const FONT_AWESOME_LINK_SELECTOR = 'link[data-fontawesome="true"]';
+const FONT_AWESOME_LINK_HREF = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css';
+
+const csvEscapeValue = (value: string | number) => {
+  const str = String(value).replace(/"/g, '""');
+  return `"${str}"`;
+};
+
+const buildCsvContent = (headers: string[], rows: Array<Array<string | number>>) => {
+  return [headers, ...rows].map((row) => row.map(csvEscapeValue).join(',')).join('\n');
+};
+
+const getErrorMessage = (err: unknown, fallback: string) => {
+  if (err && typeof err === 'object' && 'message' in err) {
+    const maybeMessage = (err as { message?: unknown }).message;
+    if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage;
+  }
+  return fallback;
+};
+
+const getAxiosLikeErrorMessage = (err: unknown): string | null => {
+  if (!err || typeof err !== 'object') return null;
+  const response = (err as { response?: unknown }).response;
+  if (!response || typeof response !== 'object') return null;
+  const data = (response as { data?: unknown }).data;
+  if (!data || typeof data !== 'object') return null;
+  const message = (data as { message?: unknown }).message;
+  return typeof message === 'string' ? message : null;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return Boolean(value) && typeof value === 'object';
+};
+
+type RealtimeSummaryItem = {
+  id?: string | number;
+  label?: string;
+  value?: string | number;
+  delta?: string | number;
+  positive?: boolean;
+};
+
+const themeOptions: ThemeName[] = ['Light', 'Dark'];
 
 const dashboardColorPairs = [
   // 🔴 Red – พื้นหลังชมพูอ่อน อ่านง่าย
@@ -250,204 +317,393 @@ const dashboardColorPairs = [
 const BRANDING_STORAGE_KEY = 'dashboardBranding';
 const SETTINGS_STORAGE_KEY = 'dashboardSettings';
 
-interface StatConfig {
-  label: string;
-  value: string;
-  helper?: string;
-}
+const SCHEDULE_REPORT_MENU_OPTIONS = [
+  'Overview Dashboard',
+  'Campaign Performance',
+  'SEO & Web Analytics',
+  'E-commerce Insights',
+  'CRM & Leads',
+  'Trend Analysis & History',
+];
 
-const StatCard: React.FC<StatConfig> = ({ label, value, helper }) => (
-  <div className="bg-white rounded-2xl px-4 py-5 border border-gray-100 shadow-sm">
-    <p className="text-xs font-semibold text-gray-500 uppercase ">{label}</p>
-    <p className="mt-2 text-3xl font-semibold text-gray-900">{value}</p>
-    {helper && <p className="text-xs text-gray-500">{helper}</p>}
-  </div>
-);
+const splitRecipients = (value: string) => {
+  return value
+    .split(/[,;\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
 
-const RealTimeCard: React.FC<{
-  label: string;
-  value: string;
-  delta: string;
-  positive?: boolean;
-  active?: boolean;
-  onSelect?: () => void;
-  detail?: string;
-}> = ({ label, value, delta, positive = true, active = false, onSelect, detail }) => {
-  const interactive = Boolean(onSelect);
-  const detailText = detail || delta || 'More insight coming soon.';
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (!interactive || !onSelect) return;
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      onSelect();
+const ScheduleReportCard: React.FC<{
+  schedule: typeof mockReportBuilders.schedule;
+  recipientOptions: string[];
+  platformOptions: string[];
+}> = ({
+  schedule,
+  recipientOptions,
+  platformOptions,
+}) => {
+    const [reportName, setReportName] = useState<string>('');
+    const normalizeScheduleMenu = useCallback((value: string) => {
+      const raw = typeof value === 'string' ? value.trim() : '';
+      const legacyMap: Record<string, string> = {
+        Campaign: 'Campaign Performance',
+        SEO: 'SEO & Web Analytics',
+        Commerce: 'E-commerce Insights',
+        CRM: 'CRM & Leads',
+      };
+      const normalized = legacyMap[raw] || raw;
+      if (KPI_METRIC_OPTIONS?.[normalized]) return normalized;
+      return 'Campaign Performance';
+    }, []);
+
+    const [menu, setMenu] = useState<string>(() => normalizeScheduleMenu(schedule.menu || 'Campaign Performance'));
+    const [scheduleTime, setScheduleTime] = useState<string>(() => schedule.scheduleTime || new Date().toISOString().slice(0, 10));
+    const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
+    const [emailRecipients, setEmailRecipients] = useState<string>('');
+    const [selectedPlatform, setSelectedPlatform] = useState<string>('');
+    const scheduleDateInputRef = useRef<HTMLInputElement | null>(null);
+
+    const selectedRecipients = useMemo(() => {
+      return splitRecipients(emailRecipients);
+    }, [emailRecipients]);
+
+    const toggleRecipient = useCallback((email: string) => {
+      const normalized = email.trim();
+      if (!normalized) return;
+
+      setEmailRecipients((prev) => {
+        const current = splitRecipients(prev);
+        const exists = current.includes(normalized);
+        const next = exists ? current.filter((item) => item !== normalized) : [...current, normalized];
+        return next.join(', ');
+      });
+    }, []);
+
+    const metricOptions = useMemo(() => {
+      const kpiKey = normalizeScheduleMenu(menu);
+      const options = KPI_METRIC_OPTIONS?.[kpiKey] || [];
+      return Array.isArray(options) ? options : [];
+    }, [menu, normalizeScheduleMenu]);
+
+    const metricSummary = useMemo(() => {
+      if (!selectedMetrics.length) return '-';
+      return selectedMetrics.join(', ');
+    }, [selectedMetrics]);
+
+    const toggleMetric = useCallback((metric: string) => {
+      setSelectedMetrics((prev) => {
+        if (prev.includes(metric)) {
+          return prev.filter((item) => item !== metric);
+        }
+        return [...prev, metric];
+      });
+    }, []);
+
+    return (
+      <div className="theme-card rounded-3xl p-5 flex flex-col h-full">
+        <p className="font-semibold theme-text !text-[20px] !leading-tight !mb-0">Schedule Report</p>
+
+        <div className="mt-5 grid grid-cols-2 gap-4">
+          <div>
+            <p className="text-[11px] theme-muted">Report name</p>
+            <input
+              value={reportName}
+              onChange={(e) => setReportName(e.target.value)}
+              className="mt-2 w-full rounded-xl border px-3 py-2 text-sm theme-input focus:outline-none"
+              style={{ borderColor: 'var(--theme-border)' }}
+            />
+          </div>
+
+          <div>
+            <p className="text-[11px] theme-muted">Menu</p>
+            <select
+              value={menu}
+              onChange={(e) => {
+                const next = e.target.value;
+                setMenu(normalizeScheduleMenu(next));
+                setSelectedMetrics([]);
+                setSelectedPlatform('');
+              }}
+              className="mt-2 w-full rounded-xl border px-3 py-2 text-sm theme-input focus:outline-none"
+              style={{ borderColor: 'var(--theme-border)' }}
+            >
+              <option value={menu} hidden>
+                {menu}
+              </option>
+              {SCHEDULE_REPORT_MENU_OPTIONS
+                .filter((option) => option !== menu)
+                .map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          <div>
+            <p className="text-[11px] theme-muted">Metrics</p>
+            <input
+              value={metricSummary}
+              readOnly
+              className="mt-2 w-full rounded-xl border px-3 py-2 text-sm theme-input focus:outline-none"
+              style={{ borderColor: 'var(--theme-border)' }}
+            />
+            <div className="mt-2 flex flex-wrap gap-2">
+              {metricOptions.map((opt) => {
+                const active = selectedMetrics.includes(opt);
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => toggleMetric(opt)}
+                    className="rounded-full border px-3 py-1 text-xs font-semibold transition-colors"
+                    style={{
+                      borderColor: 'var(--theme-border)',
+                      backgroundColor: active ? 'var(--accent-color)' : 'var(--theme-surface)',
+                      color: active ? '#ffffff' : 'var(--theme-text)',
+                    }}
+                    title={active ? 'Remove metric' : 'Add metric'}
+                  >
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <p className="text-[11px] theme-muted">Schedule date</p>
+            <div
+              className="mt-2 relative"
+              onClick={() => {
+                const el = scheduleDateInputRef.current;
+                if (!el) return;
+                try {
+                  const picker = (el as HTMLInputElement & { showPicker?: () => void }).showPicker;
+                  picker?.();
+                } catch {
+                  // ignore
+                }
+                el.focus();
+              }}
+            >
+              <Calendar
+                className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                style={{ color: 'var(--theme-muted)' }}
+              />
+              <input
+                type="date"
+                ref={scheduleDateInputRef}
+                value={scheduleTime}
+                onChange={(e) => setScheduleTime(e.target.value)}
+                className="w-full rounded-xl border pl-10 pr-3 py-2 text-sm theme-input focus:outline-none"
+                style={{ borderColor: 'var(--theme-border)' }}
+                placeholder="YYYY-MM-DD"
+              />
+            </div>
+
+            {menu === 'Campaign Performance' && platformOptions.length > 0 && (
+              <div className="mt-4">
+                <p className="text-[11px] theme-muted">Platform</p>
+                <select
+                  value={selectedPlatform}
+                  onChange={(event) => setSelectedPlatform(event.target.value)}
+                  className="mt-2 w-full rounded-xl border px-3 py-2 text-sm theme-input focus:outline-none"
+                  style={{ borderColor: 'var(--theme-border)' }}
+                >
+                  <option value={selectedPlatform} hidden>
+                    {selectedPlatform || 'Select platform'}
+                  </option>
+                  {platformOptions
+                    .filter((option) => option !== selectedPlatform)
+                    .map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-5">
+          <p className="text-[11px] theme-muted">Email recipients</p>
+          <input
+            value={emailRecipients}
+            onChange={(e) => setEmailRecipients(e.target.value)}
+            className="mt-2 w-full rounded-xl border px-3 py-2 text-sm theme-input focus:outline-none"
+            style={{ borderColor: 'var(--theme-border)' }}
+            placeholder="-"
+          />
+
+          {Array.isArray(recipientOptions) && recipientOptions.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {recipientOptions.map((email) => {
+                const active = selectedRecipients.includes(email);
+                return (
+                  <button
+                    key={email}
+                    type="button"
+                    onClick={() => toggleRecipient(email)}
+                    className="rounded-full border px-3 py-1 text-xs font-semibold transition-colors"
+                    style={{
+                      borderColor: 'var(--theme-border)',
+                      backgroundColor: active ? 'var(--accent-color)' : 'var(--theme-surface)',
+                      color: active ? '#ffffff' : 'var(--theme-text)',
+                    }}
+                    title={active ? 'Remove recipient' : 'Add recipient'}
+                  >
+                    {email}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-auto pt-5">
+          <button
+            type="button"
+            className="w-full rounded-2xl py-3 text-sm font-semibold border"
+            style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-surface)', color: 'var(--theme-text)' }}
+          >
+            <span className="inline-flex items-center gap-2 justify-center">
+              <Calendar className="h-4 w-4" style={{ color: 'var(--theme-muted)' }} />
+              Schedule Report
+            </span>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+const ReportStatusTable: React.FC = () => {
+  const roleStyle = (role: string) => {
+    const normalized = (role || '').toLowerCase();
+    if (normalized === 'admin') {
+      return {
+        backgroundColor: 'rgba(249, 115, 22, 0.14)',
+        border: '1px solid rgba(249, 115, 22, 0.30)',
+        color: '#fb923c',
+      };
     }
+    if (normalized === 'executive') {
+      return {
+        backgroundColor: 'rgba(148, 163, 184, 0.14)',
+        border: '1px solid rgba(148, 163, 184, 0.25)',
+        color: 'var(--theme-text)',
+      };
+    }
+    return {
+      backgroundColor: 'rgba(148, 163, 184, 0.14)',
+      border: '1px solid rgba(148, 163, 184, 0.25)',
+      color: 'var(--theme-text)',
+    };
+  };
+
+  const statusStyle = (status: string) => {
+    const normalized = (status || '').toLowerCase();
+    if (normalized === 'scheduled') {
+      return {
+        backgroundColor: 'rgba(249, 115, 22, 0.14)',
+        border: '1px solid rgba(249, 115, 22, 0.30)',
+        color: '#fb923c',
+      };
+    }
+    if (normalized === 'download') {
+      return {
+        backgroundColor: 'rgba(56, 189, 248, 0.18)',
+        border: '1px solid rgba(56, 189, 248, 0.40)',
+        color: '#38bdf8',
+      };
+    }
+    if (normalized === 'notified') {
+      return {
+        backgroundColor: 'rgba(34, 197, 94, 0.14)',
+        border: '1px solid rgba(34, 197, 94, 0.30)',
+        color: '#22c55e',
+      };
+    }
+    return {
+      backgroundColor: 'rgba(148, 163, 184, 0.12)',
+      border: '1px solid rgba(148, 163, 184, 0.22)',
+      color: 'var(--theme-muted)',
+    };
+  };
+
+  const formatMetrics = (metrics: string[] | undefined) => {
+    if (!Array.isArray(metrics) || metrics.length === 0) return '—';
+    if (metrics.length <= 2) return metrics.join(', ');
+    return `${metrics.slice(0, 2).join(', ')} +${metrics.length - 2}`;
   };
 
   return (
-    <div
-      role={interactive ? 'button' : undefined}
-      tabIndex={interactive ? 0 : undefined}
-      onClick={onSelect}
-      onKeyDown={handleKeyDown}
-      className={`real-time-card relative overflow-hidden group rounded-[36px] border px-9 py-9 text-left transition bg-gradient-to-br from-white to-orange-50/20 shadow-[0_28px_80px_rgba(15,23,42,0.1)] flex flex-col gap-3 hover:bg-gray-50/60 active:bg-gray-100/80   ${
-        active
-          ? 'border-gray-900 ring-2 ring-gray-900/10 shadow-[0_32px_90px_rgba(15,23,42,0.15)] translate-y-0'
-          : 'border-gray-200 hover:-translate-y-1'
-      } ${interactive ? 'cursor-pointer focus:outline-none focus:ring-2 focus:ring-gray-900/30' : ''}`}
-    >
-      <div className="flex items-center justify-between text-[10px] font-semibold uppercase text-gray-500 gap2">
-        <span>{label}</span>
-        <span className={`h-2.5 w-2.5 rounded-full ${active ? 'bg-gray-900' : 'bg-gray-300'}`} />
+    <div className="theme-card rounded-3xl p-5 space-y-4 h-full">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-semibold theme-text !text-[20px] !leading-tight !mb-0">Report Status</p>
+          <p className="text-xs theme-muted !mb-0">Scheduled reports and automation health</p>
+        </div>
+        <span
+          className="inline-flex items-center rounded-full px-3 py-1 text-[11px] font-semibold border whitespace-nowrap"
+          style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-surface)', color: 'var(--theme-text)' }}
+        >
+          {mockReportStatus.length} records
+        </span>
       </div>
-      <p className="real-time-value text-[28px] leading-tight font-semibold text-gray-900 -mt-2">{value}</p>
-      <div
-        className={`real-time-delta inline-flex items-center gap-2 text-[11px] font-semibold px-4 py-2 rounded-full w-fit -mt-2 ${
-          positive ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'
-        }`}
-      >
-        {positive ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
-        {delta}
+
+      <div className="overflow-x-hidden">
+        <table className="w-full table-fixed text-sm">
+          <thead>
+            <tr className="text-left text-[11px] uppercase theme-muted">
+              <th className="py-2 pr-6 w-[38%]">Name</th>
+              <th className="py-2 pr-4 w-[16%]">Role</th>
+              <th className="py-2 pr-4 w-[16%]">Status</th>
+              <th className="py-2 pr-4 w-[20%]">Metrics</th>
+              <th className="py-2 w-[10%]">Date</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y" style={{ borderColor: 'var(--theme-border)' }}>
+            {mockReportStatus.map((row) => (
+              <tr key={`${row.email}-${row.date}-${row.status}`} className="theme-text align-top">
+                <td className="py-4 pr-6 min-w-0">
+                  <p className="font-semibold theme-text !text-[15px] !leading-tight !mb-0">{row.name}</p>
+                  <p className="text-xs theme-muted !mb-0 break-words">{row.email}</p>
+                </td>
+                <td className="py-4 pr-4 whitespace-nowrap">
+                  <span
+                    className="inline-flex items-center rounded-md px-3 py-1 text-xs font-semibold"
+                    style={roleStyle(row.role)}
+                  >
+                    {row.role}
+                  </span>
+                </td>
+                <td className="py-4 pr-4 whitespace-nowrap">
+                  <span
+                    className="inline-flex items-center rounded-md px-3 py-1 text-xs font-semibold"
+                    style={statusStyle(row.status)}
+                  >
+                    {row.status}
+                  </span>
+                </td>
+                <td className="py-4 pr-4 min-w-0">
+                  <span
+                    className="block text-xs theme-muted truncate"
+                    title={Array.isArray(row.metrics) ? row.metrics.join(', ') : undefined}
+                  >
+                    {formatMetrics(row.metrics)}
+                  </span>
+                </td>
+                <td className="py-4 text-xs theme-muted whitespace-nowrap">{row.date}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
-      <p className="real-time-subtitle text-[11px] text-gray-500 -mt-1">from last period</p>
     </div>
   );
 };
-
-const ScheduleReportCard: React.FC<{ schedule: typeof mockReportBuilders.schedule }> = ({ schedule }) => (
-  <div className="theme-card rounded-3xl p-5 flex flex-col h-full">
-    <div className="flex items-start justify-between gap-3">
-      <div className="space-y-1">
-        <p className="font-semibold theme-text !text-[20px] !leading-tight !mb-0">Schedule Report</p>
-        <p className="theme-muted !text-[16px] !leading-tight !mb-0">Set delivery time, recipients, and export format.</p>
-      </div>
-      <span
-        className="inline-flex items-center rounded-full px-3 py-1 text-[11px] font-semibold border whitespace-nowrap tabular-nums"
-        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--surface-muted)', color: 'var(--theme-text)' }}
-      >
-        {schedule.scheduleTime}
-      </span>
-    </div>
-
-    <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-      <div
-        className="rounded-2xl p-4 border"
-        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--surface-muted)' }}
-      >
-        <p className="text-xs theme-muted">Report</p>
-        <p className="mt-1 font-semibold theme-text !text-[15px] !leading-tight !mb-0">{schedule.name}</p>
-        <p className="mt-2 text-xs theme-muted">Menu</p>
-        <p className="mt-1 font-semibold theme-text !text-[15px] !leading-tight !mb-0">{schedule.menu}</p>
-      </div>
-
-      <div
-        className="rounded-2xl p-4 border"
-        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--surface-muted)' }}
-      >
-        <p className="text-xs theme-muted">Date Range</p>
-        <p className="mt-1 font-semibold theme-text !text-[15px] !leading-tight !mb-0">{schedule.dateRange}</p>
-        <p className="mt-2 text-xs theme-muted">Send at</p>
-        <p className="mt-1 font-semibold theme-text !text-[15px] !leading-tight !mb-0">{schedule.scheduleTime}</p>
-      </div>
-    </div>
-
-    <div className="mt-5 grid grid-cols-1 gap-4">
-      <div>
-        <p className="text-xs theme-muted">Email Recipients</p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {schedule.recipients.map((email) => (
-            <span
-              key={email}
-              className="px-3 py-1 rounded-full border text-xs font-semibold"
-              style={{ borderColor: 'var(--theme-border)', backgroundColor: 'transparent', color: 'var(--theme-text)' }}
-            >
-              {email}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div>
-        <p className="text-xs theme-muted">Format</p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {schedule.format.map((format) => (
-            <span
-              key={format}
-              className="px-3 py-1 rounded-full border text-xs font-semibold"
-              style={{ borderColor: 'var(--theme-border)', color: 'var(--theme-text)', backgroundColor: 'transparent' }}
-            >
-              {format}
-            </span>
-          ))}
-        </div>
-      </div>
-    </div>
-
-    <button
-      className="mt-auto w-full rounded-2xl py-3 text-sm font-semibold"
-      style={{ backgroundColor: 'var(--accent-color)', color: '#ffffff' }}
-    >
-      Schedule Report
-    </button>
-  </div>
-);
-
-const ReportStatusTable: React.FC = () => (
-  <div className="theme-card rounded-3xl p-5 space-y-4 h-full">
-    <p className="font-semibold theme-text !text-[20px] !leading-tight !mb-0">Report Status</p>
-    <div className="overflow-x-auto">
-      <table className="min-w-full text-sm">
-        <thead>
-          <tr className="text-left text-xs uppercase theme-muted">
-            <th className="py-2 pr-4">Name</th>
-            <th className="py-2 pr-4">Role</th>
-            <th className="py-2 pr-4">Status</th>
-            <th className="py-2">Date</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y" style={{ borderColor: 'var(--theme-border)' }}>
-          {mockReportStatus.map((row) => (
-            <tr key={row.email} className="theme-text">
-              <td className="py-3 pr-4">
-                <p className="font-semibold theme-text !text-[15px] !leading-tight !mb-0">{row.name}</p>
-                <p className="text-xs theme-muted !mb-0">{row.email}</p>
-              </td>
-              <td className="py-3 pr-4">
-                <span className="px-3 py-1 rounded-full bg-gray-900 text-white text-xs">{row.role}</span>
-              </td>
-              <td className="py-3 pr-4">
-                <span
-                  className="px-3 py-1 rounded-full text-xs font-semibold"
-                  style={
-                    row.status === 'Download'
-                      ? {
-                          backgroundColor: 'rgba(59, 130, 246, 0.16)',
-                          border: '1px solid rgba(59, 130, 246, 0.35)',
-                          color: 'rgba(147, 197, 253, 0.95)',
-                        }
-                      : row.status === 'Scheduled'
-                      ? {
-                          backgroundColor: 'rgba(245, 158, 11, 0.16)',
-                          border: '1px solid rgba(245, 158, 11, 0.35)',
-                          color: 'rgba(253, 230, 138, 0.95)',
-                        }
-                      : {
-                          backgroundColor: 'rgba(16, 185, 129, 0.16)',
-                          border: '1px solid rgba(16, 185, 129, 0.35)',
-                          color: 'rgba(167, 243, 208, 0.95)',
-                        }
-                  }
-                >
-                  {row.status}
-                </span>
-              </td>
-              <td className="py-3">{row.date}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
 
 const KPI_OVERVIEW_SUBMENU_OPTIONS = [
   'Campaign Performance',
@@ -457,273 +713,298 @@ const KPI_OVERVIEW_SUBMENU_OPTIONS = [
   'Trend Analysis & History',
 ];
 
+const getBaseKpiAlertMenuOptions = () => {
+  return Array.isArray(KPI_ALERT_MENU_OPTIONS) && KPI_ALERT_MENU_OPTIONS.length > 0
+    ? KPI_ALERT_MENU_OPTIONS
+    : ['Overview Dashboard'];
+};
+
+const normalizeKpiAlertName = (kpiAlertName: unknown, baseMenuOptions: string[]) => {
+  const rawAlertName = typeof kpiAlertName === 'string' ? kpiAlertName.trim() : '';
+  return baseMenuOptions.includes(rawAlertName) ? rawAlertName : baseMenuOptions[0];
+};
+
+const getVisibleKpiMenuOptions = (currentAlertName: string, baseMenuOptions: string[]) => {
+  return currentAlertName === 'Overview Dashboard' ? KPI_OVERVIEW_SUBMENU_OPTIONS : baseMenuOptions;
+};
+
+const getKpiMetricOptionsForMenu = (menu: string, fallbackMenu: string) => {
+  const options = KPI_METRIC_OPTIONS?.[menu] || KPI_METRIC_OPTIONS?.[fallbackMenu] || ['Financial Overview'];
+  return Array.isArray(options) ? options : ['Financial Overview'];
+};
+
 const KpiSettingsTable: React.FC<{
   settingsData: SettingsData;
   settingsLoading: boolean;
-  onUpdateKpi: (id: string, patch: Partial<any>) => void;
+  onUpdateKpi: (id: string, patch: Partial<KpiSettingRow>) => void;
   onAddKpi: () => void;
   onRemoveKpi: (id: string) => void;
-}> = ({ settingsData, settingsLoading, onUpdateKpi, onAddKpi, onRemoveKpi }) => (
-  <div className="theme-card rounded-3xl border border-gray-100 bg-white p-6 space-y-4">
-    <div className="flex items-center justify-between">
-      <div>
-        <p className="font-semibold text-gray-900 !text-[20px] !leading-tight !mb-0">KPI Alert Thresholds</p>
-        <p className="text-gray-500 !text-[16px] !leading-tight !mb-0">Configure when to trigger alerts for key metrics</p>
+  platformOptions: string[];
+}> = ({ settingsData, settingsLoading, onUpdateKpi, onAddKpi, onRemoveKpi, platformOptions }) => {
+  const baseMenuOptions = getBaseKpiAlertMenuOptions();
+  const showPlatformColumn = settingsData.kpis.some(
+    (kpi) => normalizeKpiAlertName(kpi.alertName, baseMenuOptions) === 'Campaign Performance',
+  );
+  const emptyColSpan = showPlatformColumn ? 6 : 5;
+
+  return (
+    <div className="theme-card rounded-3xl border border-gray-100 bg-white p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="font-semibold text-gray-900 !text-[20px] !leading-tight !mb-0">KPI Alert Thresholds</p>
+          <p className="text-gray-500 !text-[12px] !leading-tight !mb-0">Configure when to trigger alerts for key metrics</p>
+        </div>
       </div>
-    </div>
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left text-xs uppercase tracking-wider text-gray-500">
-            <th className="py-3 pr-4 whitespace-nowrap">Menu</th>
-            <th className="py-3 pr-4 whitespace-nowrap">Metric</th>
-            <th className="py-3 pr-4 whitespace-nowrap">Condition</th>
-            <th className="py-3 pr-4 whitespace-nowrap">Threshold(%)</th>
-            <th className="py-3 pr-4 whitespace-nowrap">Status</th>
-            <th className="py-3 whitespace-nowrap"></th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100">
-          {settingsData.kpis.length > 0 ? (
-            settingsData.kpis.map((kpi: any) => (
-              <tr key={kpi.id} className="text-gray-800">
-                <td className="py-4 pr-4">
-                  {(() => {
-                    const baseMenuOptions =
-                      Array.isArray(KPI_ALERT_MENU_OPTIONS) && KPI_ALERT_MENU_OPTIONS.length > 0
-                        ? KPI_ALERT_MENU_OPTIONS
-                        : ['Overview Dashboard'];
-                    const rawAlertName = typeof kpi.alertName === 'string' ? kpi.alertName.trim() : '';
-                    const currentAlertName = baseMenuOptions.includes(rawAlertName) ? rawAlertName : baseMenuOptions[0];
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase tracking-wider text-gray-500">
+              <th className="py-3 pr-4 whitespace-nowrap">Menu</th>
+              <th className="py-3 pr-4 whitespace-nowrap">Metric</th>
+              {showPlatformColumn ? <th className="py-3 pr-4 whitespace-nowrap">Platform</th> : null}
+              <th className="py-3 pr-4 whitespace-nowrap">Condition</th>
+              <th className="py-3 pr-4 whitespace-nowrap">Threshold(%)</th>
+              <th className="py-3 whitespace-nowrap"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {settingsData.kpis.length > 0 ? (
+              settingsData.kpis.map((kpi) => (
+                <tr key={kpi.id} className="text-gray-800">
+                  <td className="py-4 pr-4">
+                    {(() => {
+                      const baseMenuOptions = getBaseKpiAlertMenuOptions();
+                      const currentAlertName = normalizeKpiAlertName(kpi.alertName, baseMenuOptions);
+                      const visibleMenuOptions = getVisibleKpiMenuOptions(currentAlertName, baseMenuOptions);
+                      const fallbackMenu = baseMenuOptions[0];
 
-                    const visibleMenuOptions =
-                      currentAlertName === 'Overview Dashboard'
-                        ? KPI_OVERVIEW_SUBMENU_OPTIONS
-                        : baseMenuOptions;
-
-                    return (
-                      <select
-                        className="theme-input rounded-2xl border px-3 py-2 text-sm"
-                        style={{ borderColor: 'var(--theme-border)' }}
-                        value={currentAlertName}
-                        onChange={(event) => {
-                          const nextAlertName = event.target.value;
-                          const nextMetricOptions =
-                            KPI_METRIC_OPTIONS?.[nextAlertName] || KPI_METRIC_OPTIONS?.[baseMenuOptions[0]] || ['Financial Overview'];
-                          const nextMetric = nextMetricOptions[0];
-                          const summary = KPI_METRIC_SUMMARY?.[nextMetric];
-                          onUpdateKpi(kpi.id, {
-                            alertName: nextAlertName,
-                            metric: nextMetric,
-                            ...(summary
-                              ? {
+                      return (
+                        <select
+                          className="theme-input rounded-2xl border px-3 py-2 text-sm"
+                          style={{ borderColor: 'var(--theme-border)' }}
+                          value={currentAlertName}
+                          onChange={(event) => {
+                            const nextAlertName = event.target.value;
+                            const nextMetricOptions = getKpiMetricOptionsForMenu(nextAlertName, fallbackMenu);
+                            const nextMetric = nextMetricOptions[0];
+                            const summary = KPI_METRIC_SUMMARY?.[nextMetric];
+                            onUpdateKpi(kpi.id, {
+                              alertName: nextAlertName,
+                              metric: nextMetric,
+                              ...(summary
+                                ? {
                                   threshold: summary.threshold,
                                   status: summary.status,
                                   condition: summary.condition || KPI_CONDITION_OPTIONS[0],
                                 }
-                              : null),
-                          });
-                        }}
-                      >
-                        <option value={currentAlertName} hidden>
-                          {currentAlertName}
-                        </option>
-                        {visibleMenuOptions
-                          .filter((option) => option !== currentAlertName)
-                          .map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                      </select>
-                    );
-                  })()}
-                </td>
-                <td className="py-4 pr-4">
-                  {(() => {
-                    const baseMenuOptions =
-                      Array.isArray(KPI_ALERT_MENU_OPTIONS) && KPI_ALERT_MENU_OPTIONS.length > 0
-                        ? KPI_ALERT_MENU_OPTIONS
-                        : ['Overview Dashboard'];
-                    const rawAlertName = typeof kpi.alertName === 'string' ? kpi.alertName.trim() : '';
-                    const currentAlertName = baseMenuOptions.includes(rawAlertName) ? rawAlertName : baseMenuOptions[0];
-                    const metricOptions =
-                      KPI_METRIC_OPTIONS?.[currentAlertName] || KPI_METRIC_OPTIONS?.[baseMenuOptions[0]] || ['Financial Overview'];
-                    const currentMetric =
-                      typeof kpi.metric === 'string' && metricOptions.includes(kpi.metric) ? kpi.metric : metricOptions[0];
-                    return (
-                      <select
-                        className="theme-input rounded-2xl border px-3 py-2 text-sm"
-                        style={{ borderColor: 'var(--theme-border)' }}
-                        value={currentMetric}
-                        onChange={(event) => {
-                          const nextMetric = event.target.value;
-                          const summary = KPI_METRIC_SUMMARY?.[nextMetric];
-                          onUpdateKpi(kpi.id, {
-                            metric: nextMetric,
-                            ...(summary
-                              ? {
+                                : null),
+                            });
+                          }}
+                        >
+                          <option value={currentAlertName} hidden>
+                            {currentAlertName}
+                          </option>
+                          {visibleMenuOptions
+                            .filter((option) => option !== currentAlertName)
+                            .map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                        </select>
+                      );
+                    })()}
+                  </td>
+                  <td className="py-4 pr-4">
+                    {(() => {
+                      const baseMenuOptions = getBaseKpiAlertMenuOptions();
+                      const currentAlertName = normalizeKpiAlertName(kpi.alertName, baseMenuOptions);
+                      const fallbackMenu = baseMenuOptions[0];
+                      const metricOptions = getKpiMetricOptionsForMenu(currentAlertName, fallbackMenu);
+                      const currentMetric =
+                        typeof kpi.metric === 'string' && metricOptions.includes(kpi.metric) ? kpi.metric : metricOptions[0];
+                      return (
+                        <select
+                          className="theme-input rounded-2xl border px-3 py-2 text-sm"
+                          style={{ borderColor: 'var(--theme-border)' }}
+                          value={currentMetric}
+                          onChange={(event) => {
+                            const nextMetric = event.target.value;
+                            const summary = KPI_METRIC_SUMMARY?.[nextMetric];
+                            onUpdateKpi(kpi.id, {
+                              metric: nextMetric,
+                              ...(summary
+                                ? {
                                   threshold: summary.threshold,
                                   status: summary.status,
                                   condition: summary.condition || KPI_CONDITION_OPTIONS[0],
                                 }
-                              : null),
-                          });
-                        }}
-                      >
-                        <option value={currentMetric} hidden>
-                          {currentMetric}
-                        </option>
-                        {metricOptions
-                          .filter((option) => option !== currentMetric)
-                          .map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                      </select>
-                    );
-                  })()}
-                </td>
-                <td className="py-4 pr-4">
-                  {(() => {
-                    const currentCondition =
-                      typeof kpi.condition === 'string' && (KPI_CONDITION_OPTIONS as readonly string[]).includes(kpi.condition)
-                        ? kpi.condition
-                        : KPI_CONDITION_OPTIONS[0];
-                    return (
-                      <select
-                        className="theme-input rounded-2xl border px-3 py-2 text-sm"
-                        style={{ borderColor: 'var(--theme-border)' }}
-                        value={currentCondition}
-                        onChange={(event) => onUpdateKpi(kpi.id, { condition: event.target.value })}
-                      >
-                        <option value={currentCondition} hidden>
-                          {currentCondition}
-                        </option>
-                        {(KPI_CONDITION_OPTIONS as readonly string[])
-                          .filter((option) => option !== currentCondition)
-                          .map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                      </select>
-                    );
-                  })()}
-                </td>
-                <td className="py-4 pr-4">
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    className="theme-input rounded-2xl border px-3 py-2 text-sm w-[140px]"
-                    style={{ borderColor: 'var(--theme-border)' }}
-                    value={typeof kpi.threshold === 'string' ? kpi.threshold : String(kpi.threshold ?? '')}
-                    onChange={(event) => onUpdateKpi(kpi.id, { threshold: event.target.value })}
-                    placeholder="e.g. 5"
-                  />
-                </td>
-                <td className="py-4 pr-4">
-                  {(() => {
-                    const normalizedStatus = String(kpi.status || 'inactive').toLowerCase();
-                    const enabled = normalizedStatus === 'active' || normalizedStatus === 'enabled';
-                    const label = enabled ? 'Active' : 'Inactive';
-                    return (
-                      <span
-                        className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold"
-                        style={
-                          enabled
-                            ? {
-                                backgroundColor: 'rgba(249, 115, 22, 0.14)',
-                                border: '1px solid rgba(249, 115, 22, 0.35)',
-                                color: 'var(--accent-color)',
-                              }
-                            : {
-                                backgroundColor: 'rgba(148, 163, 184, 0.12)',
-                                border: '1px solid rgba(148, 163, 184, 0.22)',
-                                color: 'var(--theme-muted)',
-                              }
+                                : null),
+                            });
+                          }}
+                        >
+                          <option value={currentMetric} hidden>
+                            {currentMetric}
+                          </option>
+                          {metricOptions
+                            .filter((option) => option !== currentMetric)
+                            .map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                        </select>
+                      );
+                    })()}
+                  </td>
+                  {showPlatformColumn ? (
+                    <td className="py-4 pr-4">
+                      {(() => {
+                        const currentAlertName = normalizeKpiAlertName(kpi.alertName, baseMenuOptions);
+                        const currentPlatform = typeof (kpi as any).platform === 'string' ? (kpi as any).platform : '';
+
+                        if (currentAlertName !== 'Campaign Performance') {
+                          return null;
                         }
-                      >
-                        <span
-                          className="h-1.5 w-1.5 rounded-full"
-                          style={{ backgroundColor: enabled ? 'var(--accent-color)' : 'var(--theme-muted)' }}
+
+                        if (!Array.isArray(platformOptions) || platformOptions.length === 0) {
+                          return null;
+                        }
+
+                        return (
+                          <select
+                            className="theme-input rounded-2xl border px-3 py-2 text-sm min-w-[160px]"
+                            style={{ borderColor: 'var(--theme-border)' }}
+                            value={currentPlatform}
+                            onChange={(event) =>
+                              onUpdateKpi(kpi.id, { platform: event.target.value } as Partial<KpiSettingRow>)
+                            }
+                          >
+                            <option value={currentPlatform} hidden>
+                              {currentPlatform || 'Select platform'}
+                            </option>
+                            {platformOptions
+                              .filter((option) => option !== currentPlatform)
+                              .map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                          </select>
+                        );
+                      })()}
+                    </td>
+                  ) : null}
+                  <td className="py-4 pr-4">
+                    {(() => {
+                      const currentCondition =
+                        typeof kpi.condition === 'string' && (KPI_CONDITION_OPTIONS as readonly string[]).includes(kpi.condition)
+                          ? kpi.condition
+                          : KPI_CONDITION_OPTIONS[0];
+                      return (
+                        <select
+                          className="theme-input rounded-2xl border px-3 py-2 text-sm"
+                          style={{ borderColor: 'var(--theme-border)' }}
+                          value={currentCondition}
+                          onChange={(event) => onUpdateKpi(kpi.id, { condition: event.target.value })}
+                        >
+                          <option value={currentCondition} hidden>
+                            {currentCondition}
+                          </option>
+                          {(KPI_CONDITION_OPTIONS as readonly string[])
+                            .filter((option) => option !== currentCondition)
+                            .map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                        </select>
+                      );
+                    })()}
+                  </td>
+                  <td className="py-4 pr-4">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className="theme-input rounded-2xl border px-3 py-2 text-sm w-[140px]"
+                      style={{ borderColor: 'var(--theme-border)' }}
+                      value={typeof kpi.threshold === 'string' ? kpi.threshold : String(kpi.threshold ?? '')}
+                      onChange={(event) => onUpdateKpi(kpi.id, { threshold: event.target.value })}
+                      placeholder="e.g. 5"
+                    />
+                  </td>
+                  <td className="py-4">
+                    <button
+                      type="button"
+                      aria-label="Remove KPI"
+                      className="h-9 w-9 inline-flex items-center justify-center rounded-xl border"
+                      style={{ borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+                      onClick={() => onRemoveKpi(kpi.id)}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path
+                          d="M3 6h18"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
                         />
-                        {label}
-                      </span>
-                    );
-                  })()}
-                </td>
-                <td className="py-4">
-                  <button
-                    type="button"
-                    aria-label="Remove KPI"
-                    className="h-9 w-9 inline-flex items-center justify-center rounded-xl border"
-                    style={{ borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-                    onClick={() => onRemoveKpi(kpi.id)}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path
-                        d="M3 6h18"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M8 6V4h8v2"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M6 6l1 16h10l1-16"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M10 11v6"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M14 11v6"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </button>
+                        <path
+                          d="M8 6V4h8v2"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M6 6l1 16h10l1-16"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M10 11v6"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M14 11v6"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={emptyColSpan} className="py-8 text-center text-gray-500">
+                  {settingsLoading ? 'Loading...' : 'No KPI alerts configured'}
                 </td>
               </tr>
-            ))
-          ) : (
-            <tr>
-              <td colSpan={6} className="py-8 text-center text-gray-500">
-                {settingsLoading ? 'Loading...' : 'No KPI alerts configured'}
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
+            )}
+          </tbody>
+        </table>
+      </div>
 
-    <button
-      type="button"
-      className="w-full mt-4 rounded-2xl border py-3 text-sm font-semibold"
-      style={{ borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-      onClick={onAddKpi}
-    >
-      + Add KPI
-    </button>
-  </div>
-);
+      <button
+        type="button"
+        className="w-full mt-4 rounded-2xl border py-3 text-sm font-semibold"
+        style={{ borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+        onClick={onAddKpi}
+      >
+        + Add KPI
+      </button>
+
+    </div>
+  );
+};
 
 const ThemeBrandingCard: React.FC<{
   settingsData: SettingsData;
@@ -747,11 +1028,10 @@ const ThemeBrandingCard: React.FC<{
               <button
                 key={themeOption}
                 onClick={() => onSelectTheme(themeOption)}
-                className={`flex-1 px-3 py-1 rounded-full border text-xs font-semibold ${
-                  settingsData.branding.theme === themeOption
-                    ? 'bg-gray-900 text-white border-gray-900'
-                    : 'border-gray-200 text-gray-600 hover:border-gray-400'
-                }`}
+                className={`flex-1 px-3 py-1 rounded-full border text-xs font-semibold ${settingsData.branding.theme === themeOption
+                  ? 'bg-gray-900 text-white border-gray-900'
+                  : 'border-gray-200 text-gray-600 hover:border-gray-400'
+                  }`}
               >
                 {themeOption}
               </button>
@@ -803,122 +1083,6 @@ const ThemeBrandingCard: React.FC<{
   );
 };
 
-const DataRefreshCard: React.FC<{
-  settingsData: SettingsData;
-  onChangeRefresh: (patch: Partial<SettingsData['refresh']>) => void;
-  onManualTrigger: () => void;
-}> = ({ settingsData, onChangeRefresh, onManualTrigger }) => {
-  const frequencyOptions = ['Every 5 minutes', 'Every 15 minutes', 'Every 30 minutes', 'Hourly', 'Daily'];
-  const manualEnabled = Boolean(settingsData.refresh.manual);
-  const realtimeEnabled = Boolean(settingsData.refresh.realtime);
-	const [manualSpinning, setManualSpinning] = useState(false);
-
-  const currentFrequency = settingsData.refresh.frequency || 'Every 5 minutes';
-
-  return (
-    <div className="theme-card rounded-3xl p-6 space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <div>
-            <p className="font-semibold theme-text text-[20px] leading-tight mb-0">Data Refresh Schedule</p>
-            <p className="theme-muted !text-[16px] !leading-tight !mb-0">Control how often this dashboard pulls fresh data.</p>
-          </div>
-        </div>
-        <span className="hidden sm:inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-medium border"
-          style={{
-            backgroundColor: 'var(--surface-muted)',
-            borderColor: 'var(--theme-border)',
-            color: 'var(--theme-text)',
-          }}
-        >
-          <span
-            className="h-1.5 w-1.5 rounded-full"
-            style={{ backgroundColor: realtimeEnabled ? 'var(--accent-color)' : 'var(--theme-border)' }}
-          />
-          {realtimeEnabled ? 'Real-time ON' : 'Real-time OFF'}
-        </span>
-      </div>
-
-      {/* Frequency selector */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-medium theme-text">Refresh frequency</p>
-          <span className="text-[11px] theme-muted">Applies to all refresh modes</span>
-        </div>
-        <div className="relative">
-          <select
-            className="theme-input w-full rounded-2xl px-4 py-2.5 text-sm font-medium shadow-sm appearance-none pr-10"
-            value={currentFrequency}
-            onChange={(event) => onChangeRefresh({ frequency: event.target.value })}
-          >
-            {frequencyOptions.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-          <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-4 text-xs theme-muted">
-            ▼
-          </span>
-        </div>
-      </div>
-
-      {/* Modes: Manual & Real-time */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-        <div className="theme-panel-soft rounded-2xl px-4 py-3 flex flex-col gap-2 justify-between min-h-[124px]">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium theme-text">Manual refresh</p>
-              <p className="text-[11px] theme-muted">Trigger updates only when you click refresh.</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              setManualSpinning(true);
-              onManualTrigger();
-              setTimeout(() => setManualSpinning(false), 700);
-            }}
-            className="inline-flex items-center justify-between w-full rounded-full px-3 py-1.5 text-xs font-medium border transition-colors theme-text"
-            style={{ borderColor: 'var(--theme-border)' }}
-          >
-            <span className="flex items-center gap-2">
-              <Loader2 className={`h-3.5 w-3.5 ${manualSpinning ? 'animate-spin' : ''}`} />
-              Manual trigger
-            </span>
-            <span className="text-[10px] uppercase tracking-wide">Manual</span>
-          </button>
-        </div>
-
-        <div className="theme-panel-soft rounded-2xl px-4 py-3 flex flex-col gap-2 justify-between min-h-[124px]">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium theme-text">Real-time sync</p>
-              <p className="text-[11px] theme-muted">Automatically refresh based on the selected interval.</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => onChangeRefresh({ realtime: !realtimeEnabled })}
-            className="inline-flex items-center justify-between w-full rounded-full px-3 py-1.5 text-xs font-medium border transition-colors theme-text"
-            style={
-              realtimeEnabled
-                ? { backgroundColor: 'var(--accent-color)', borderColor: 'var(--accent-color)', color: '#ffffff' }
-                : { borderColor: 'var(--theme-border)' }
-            }
-          >
-            <span className="flex items-center gap-2">
-              <Loader2 className="h-3.5 w-3.5" />
-              Real-time mode
-            </span>
-            <span className="text-[10px] uppercase tracking-wide">{realtimeEnabled ? 'Enabled' : 'Disabled'}</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 const ApiIntegrationCard: React.FC<{ settingsData: SettingsData; settingsLoading: boolean }> = ({
   settingsData,
   settingsLoading,
@@ -927,26 +1091,40 @@ const ApiIntegrationCard: React.FC<{ settingsData: SettingsData; settingsLoading
     <p className="text-sm font-semibold text-gray-900">API Integration</p>
     <div className="space-y-3">
       {settingsData.integrations.length > 0 ? (
-        settingsData.integrations.map((integration: any) => (
-          <div key={integration?.id || integration?.platform || Math.random()} className="flex items-center justify-between rounded-2xl border border-gray-100 p-3">
-            <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center text-sm font-semibold text-gray-500">
-                {(integration?.platform?.charAt(0) || '?').toUpperCase()}
+        settingsData.integrations.map((integration: IntegrationSettingRow) => {
+          const integrationRecord = integration as unknown as Record<string, unknown>;
+          const platformLabel =
+            typeof integrationRecord.platform === 'string' && integrationRecord.platform.trim()
+              ? integrationRecord.platform
+              : typeof integrationRecord.name === 'string' && integrationRecord.name.trim()
+                ? integrationRecord.name
+                : 'Unknown Platform';
+          const statusText = typeof integrationRecord.status === 'string' ? integrationRecord.status : '';
+          const connected =
+            typeof integrationRecord.connected === 'boolean'
+              ? integrationRecord.connected
+              : /connected|active|synced/i.test(statusText);
+          const integrationKey = typeof integrationRecord.id === 'string' && integrationRecord.id.trim() ? integrationRecord.id : platformLabel;
+          return (
+            <div key={integrationKey} className="flex items-center justify-between rounded-2xl border border-gray-100 p-3">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center text-sm font-semibold text-gray-500">
+                  {(platformLabel.charAt(0) || '?').toUpperCase()}
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-900">{platformLabel}</p>
+                  <p className="text-xs text-gray-500">{statusText || 'Not configured'}</p>
+                </div>
               </div>
-              <div>
-                <p className="font-semibold text-gray-900">{integration?.platform || 'Unknown Platform'}</p>
-                <p className="text-xs text-gray-500">{integration?.status || 'Not configured'}</p>
-              </div>
+              <span
+                className={`px-2 py-1 rounded-full text-xs font-semibold ${connected ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'
+                  }`}
+              >
+                {connected ? 'Connected' : 'Disconnected'}
+              </span>
             </div>
-            <span
-              className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                integration?.connected ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'
-              }`}
-            >
-              {integration?.connected ? 'Connected' : 'Disconnected'}
-            </span>
-          </div>
-        ))
+          );
+        })
       ) : (
         <div className="text-center py-8 text-gray-500">
           {settingsLoading ? 'Loading...' : 'No integrations configured'}
@@ -956,26 +1134,76 @@ const ApiIntegrationCard: React.FC<{ settingsData: SettingsData; settingsLoading
   </div>
 );
 
+const DownloadOptionsModal: React.FC<{
+  open: boolean;
+  section: string | null;
+  options: string[];
+  onClose: () => void;
+  onSelectOption: (option: string) => void;
+}> = ({ open, section, options, onClose, onSelectOption }) => {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[120] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 space-y-5 text-center"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="space-y-1">
+          <p className="text-[24px] font-semibold text-gray-900">Download options</p>
+          <p className="text-[18px] text-gray-500">{section}</p>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {options.map((option) => (
+            <button
+              key={option}
+              className="rounded-2xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-900 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+              onClick={() => onSelectOption(option)}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+        <button
+          className="w-full rounded-2xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors"
+          onClick={onClose}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const UserRolesCard: React.FC<{ settingsData: SettingsData; settingsLoading: boolean }> = ({
   settingsData,
   settingsLoading,
 }) => (
-  <div className="theme-card rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
+  <div className="theme-card rounded-3xl p-5 space-y-4">
     <div className="flex items-center justify-between">
-      <p className="font-semibold text-gray-900 !text-[20px] !leading-tight !mb-0">User Roles & Permissions</p>
-      <button className="px-3 py-1 rounded-full border border-gray-200 text-xs">+ Add User</button>
+      <p className="font-semibold theme-text !text-[20px] !leading-tight !mb-0">User Roles & Permissions</p>
+      <button
+        className="px-3 py-1 rounded-full border text-xs theme-text"
+        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'transparent' }}
+      >
+        + Add User
+      </button>
     </div>
     <div className="space-y-3 text-sm">
       {settingsData.users.length > 0 ? (
-        settingsData.users.map((user: any) => (
-          <div key={user.id} className="flex items-center justify-between rounded-2xl border border-gray-100 p-3">
+        settingsData.users.map((user: UserSettingRow) => (
+          <div key={user.id} className="flex items-center justify-between rounded-2xl theme-panel px-4 py-3">
             <div>
-              <p className="font-semibold text-gray-900 !text-[15px] !leading-tight !mb-0">{user.name}</p>
-              <p className="text-xs text-gray-500">{user.email}</p>
+              <p className="font-semibold theme-text !text-[15px] !leading-tight !mb-0">{user.name}</p>
+              <p className="text-xs theme-muted">{user.email}</p>
             </div>
-            <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
-              user.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
-            }`}>
+            <span
+              className="px-2 py-1 rounded-full text-xs font-semibold border"
+              style={{
+                backgroundColor: 'var(--theme-surface)',
+                borderColor: 'var(--theme-border)',
+                color: user.role === 'admin' ? 'var(--accent-color)' : 'var(--theme-text)',
+              }}
+            >
               {user.role}
             </span>
           </div>
@@ -986,22 +1214,23 @@ const UserRolesCard: React.FC<{ settingsData: SettingsData; settingsLoading: boo
         </div>
       )}
     </div>
-    <div className="mt-4 p-3 bg-gray-50 rounded-lg text-gray-700">
-      <p className="font-semibold text-gray-900 !text-[15px] !leading-tight !mb-1">Role Permissions:</p>
-      <p className="text-gray-500 !text-[12px] !leading-tight !mb-0">Admin: Full access.</p>
-      <p className="text-gray-500 !text-[12px] !leading-tight !mb-0">Analyst: View-only (dashboards, reports, KPIs).</p>
-      <p className="text-gray-500 !text-[12px] !leading-tight !mb-0">Executive: View-only (dashboards, reports).</p>
+    <div className="mt-4 p-3 theme-panel rounded-2xl">
+      <p className="font-semibold theme-text !text-[15px] !leading-tight !mb-1">Role Permissions:</p>
+      <p className="theme-muted !text-[12px] !leading-tight !mb-0">Admin: Full access.</p>
+      <p className="theme-muted !text-[12px] !leading-tight !mb-0">Analyst: View-only (dashboards, reports, KPIs).</p>
+      <p className="theme-muted !text-[12px] !leading-tight !mb-0">Executive: View-only (dashboards, reports).</p>
     </div>
   </div>
 );
 
 const AlertSettingsCard: React.FC<{
   settingsData: SettingsData;
-  themeMode: 'light' | 'dark' | 'canvas';
+  themeMode: 'light' | 'dark';
   onToggle: (group: keyof SettingsData['alerts'], label: string) => void;
   onAddRecipient: (email: string) => void;
   onRemoveRecipient: (email: string) => void;
-}> = ({ settingsData, themeMode, onToggle, onAddRecipient, onRemoveRecipient }) => (
+  defaultRecipientEmail?: string;
+}> = ({ settingsData, themeMode, onToggle, onAddRecipient, onRemoveRecipient, defaultRecipientEmail }) => (
   <div className="theme-card rounded-3xl p-5 space-y-4">
     <p className="font-semibold theme-text !text-[20px] !leading-tight !mb-0">Alert & Notification Settings</p>
     <div className="space-y-4 text-sm">
@@ -1009,7 +1238,7 @@ const AlertSettingsCard: React.FC<{
         <p className="uppercase theme-muted !text-[14px] !leading-tight !mb-0">Alert Types</p>
         <div className="mt-2 space-y-2">
           {settingsData.alerts.alertTypes.length > 0 ? (
-            settingsData.alerts.alertTypes.map((alert: any) => {
+            settingsData.alerts.alertTypes.map((alert: AlertTypeSettingRow) => {
               const enabled = Boolean(alert.enabled);
               const isDark = themeMode === 'dark';
               return (
@@ -1031,9 +1260,8 @@ const AlertSettingsCard: React.FC<{
                     aria-pressed={enabled}
                   >
                     <span
-                      className={`inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
-                        enabled ? 'translate-x-5' : 'translate-x-1'
-                      }`}
+                      className={`inline-block h-4 w-4 transform rounded-full shadow transition-transform ${enabled ? 'translate-x-5' : 'translate-x-1'
+                        }`}
                       style={{
                         backgroundColor: '#ffffff',
                         boxShadow: enabled
@@ -1054,7 +1282,7 @@ const AlertSettingsCard: React.FC<{
         <p className="text-xs uppercase theme-muted">Delivery Channels</p>
         <div className="mt-2 space-y-2">
           {settingsData.alerts.deliveryChannels.length > 0 ? (
-            settingsData.alerts.deliveryChannels.map((channel: any) => {
+            settingsData.alerts.deliveryChannels.map((channel: DeliveryChannelSettingRow) => {
               const enabled = Boolean(channel.enabled);
               const isDark = themeMode === 'dark';
               return (
@@ -1076,9 +1304,8 @@ const AlertSettingsCard: React.FC<{
                     aria-pressed={enabled}
                   >
                     <span
-                      className={`inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
-                        enabled ? 'translate-x-5' : 'translate-x-1'
-                      }`}
+                      className={`inline-block h-4 w-4 transform rounded-full shadow transition-transform ${enabled ? 'translate-x-5' : 'translate-x-1'
+                        }`}
                       style={{
                         backgroundColor: '#ffffff',
                         boxShadow: enabled
@@ -1102,7 +1329,7 @@ const AlertSettingsCard: React.FC<{
             <input
               type="email"
               placeholder="Add email for alerts"
-              className="flex-1 rounded-2xl px-3 py-2 text-sm theme-input"
+              className="flex-1 rounded-2xl px-3 py-2 text-sm theme-input border border-gray-300 bg-white"
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
                   onAddRecipient((event.target as HTMLInputElement).value);
@@ -1129,21 +1356,29 @@ const AlertSettingsCard: React.FC<{
           <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
             {settingsData.alerts.recipients.length > 0 ? (
               settingsData.alerts.recipients.map((email: string) => (
-                <div
-                  key={email}
-                  className="flex items-center justify-between gap-2 rounded-2xl border px-3 py-2 text-xs sm:text-sm theme-text"
-                  style={{ borderColor: 'var(--theme-border)' }}
-                >
-                  <span className="truncate">{email}</span>
-                  <button
-                    type="button"
-                    className="text-[11px] px-2 py-1 rounded-xl border theme-muted hover:opacity-80"
-                    style={{ borderColor: 'var(--theme-border)' }}
-                    onClick={() => onRemoveRecipient(email)}
-                  >
-                    Remove
-                  </button>
-                </div>
+                (() => {
+                  const normalizedDefault = (defaultRecipientEmail || '').trim();
+                  const isDefault = Boolean(normalizedDefault) && email === normalizedDefault;
+                  return (
+                    <div
+                      key={email}
+                      className="flex items-center justify-between gap-2 rounded-2xl border px-3 py-2 text-xs sm:text-sm theme-text"
+                      style={{ borderColor: 'var(--theme-border)' }}
+                    >
+                      <span className="truncate">{email}</span>
+                      <button
+                        type="button"
+                        className={`text-[11px] px-2 py-1 rounded-xl border theme-muted ${isDefault ? 'opacity-50 cursor-not-allowed' : 'hover:opacity-80'
+                          }`}
+                        style={{ borderColor: 'var(--theme-border)' }}
+                        onClick={() => onRemoveRecipient(email)}
+                        disabled={isDefault}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  );
+                })()
               ))
             ) : (
               <p className="theme-muted !text-[12px] !leading-tight !mb-0">No email recipients configured</p>
@@ -1157,7 +1392,7 @@ const AlertSettingsCard: React.FC<{
 
 const SeoConversionCard: React.FC<{ summary: typeof mockSeoConversionSummary }> = ({ summary }) => {
   return (
-    <div className="rounded-3xl border border-orange-100 bg-gradient-to-br from-white to-orange-50/30 p-6 space-y-6 shadow-[0_25px_60px_rgba(249,115,22,0.12)]">
+    <div className="theme-card rounded-3xl border border-gray-100 bg-white p-6 space-y-6 shadow-sm">
       <header className="space-y-2">
         <span className="px-3 py-1 inline-flex rounded-full border border-orange-200 text-[11px] uppercase  text-orange-500 bg-white">
           Conversions · SEO
@@ -1196,14 +1431,14 @@ const SeoConversionCard: React.FC<{ summary: typeof mockSeoConversionSummary }> 
               {summary.delta}
             </div>
           </div>
-          <p className="rounded-2xl bg-white/90 border border-orange-100 px-4 py-3 text-sm text-gray-600">
+          <p className="rounded-2xl bg-gray-50 border border-gray-100 px-4 py-3 text-sm text-gray-600">
             Track how each segment contributes to the total goal. The highest values bubble to the top so you can focus instantly.
           </p>
         </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
         {summary.breakdown.map((item) => (
-          <div key={item.label} className="flex items-center justify-between rounded-2xl border border-orange-100 bg-white/90 px-4 py-3">
+          <div key={item.label} className="flex items-center justify-between rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
             <div className="flex items-center gap-3">
               <span className="h-5 w-5 rounded-full flex-shrink-0" style={{ backgroundColor: item.color }} />
               <span className="text-gray-700 font-medium">{item.label}</span>
@@ -1217,136 +1452,334 @@ const SeoConversionCard: React.FC<{ summary: typeof mockSeoConversionSummary }> 
 };
 
 const ChannelComparisonChart: React.FC<{ data: typeof mockTrendRevenueByChannel }> = ({ data }) => {
-  const max = Math.max(...data.flatMap((d) => [d.revenue, d.cost]), 1);
+  const totals = useMemo(() => {
+    const revenue = data.reduce((sum, row) => sum + Number(row.revenue ?? 0), 0);
+    const cost = data.reduce((sum, row) => sum + Number(row.cost ?? 0), 0);
+    const profit = revenue - cost;
+    const topRevenue = data.reduce(
+      (best, row) => (Number(row.revenue ?? 0) > Number(best.revenue ?? 0) ? row : best),
+      data[0] ?? { channel: '-', revenue: 0, cost: 0 }
+    );
+    return { revenue, cost, profit, topRevenueChannel: topRevenue?.channel ?? '-' };
+  }, [data]);
+
   return (
     <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-      <p className="text-sm font-semibold text-gray-900">Revenue and costs by channel</p>
-      <div className="space-y-4">
-        {data.map((item) => (
-          <div key={item.channel}>
-            <div className="flex items-center justify-between text-xs text-gray-500">
-              <span>{item.channel}</span>
-              <span>${item.revenue}K</span>
-            </div>
-            <div className="mt-2 space-y-1">
-              <div className="h-3 rounded-full bg-pink-200">
-                <div className="h-full rounded-full bg-pink-500" style={{ width: `${(item.revenue / max) * 100}%` }} />
-              </div>
-              <div className="h-3 rounded-full bg-gray-200">
-                <div className="h-full rounded-full bg-gray-500" style={{ width: `${(item.cost / max) * 100}%` }} />
-              </div>
-            </div>
-          </div>
-        ))}
+      <p className="text-[15.68px] font-semibold text-gray-900">Revenue and costs by channel</p>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 font-semibold text-gray-700">Total Rev: {totals.revenue}K</span>
+        <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 font-semibold text-gray-700">Total Cost: {totals.cost}K</span>
+        <span className="inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 font-semibold text-emerald-700">Profit: {totals.profit}K</span>
+        <span className="inline-flex items-center rounded-full bg-pink-50 px-3 py-1 font-semibold text-pink-700">Top: {totals.topRevenueChannel}</span>
       </div>
-      <div className="flex items-center gap-4 text-xs text-gray-500">
-        <span className="inline-flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-pink-500" />Revenue</span>
-        <span className="inline-flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-gray-500" />Cost</span>
+      <div className="h-72">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} barGap={10} barCategoryGap={24} margin={{ top: 8, right: 12, left: 0, bottom: 12 }}>
+            <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#e5e7eb" />
+            <XAxis dataKey="channel" tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} interval={0} angle={-35} textAnchor="end" height={52} />
+            <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}K`} />
+            <RechartsTooltip
+              cursor={{ fill: 'rgba(17,24,39,0.04)' }}
+              formatter={(value: any, name: any) => [`${value}K`, name === 'revenue' ? 'Revenue' : 'Cost']}
+              labelStyle={{ color: '#111827', fontWeight: 600 }}
+            />
+            <Legend
+              verticalAlign="top"
+              align="right"
+              iconType="square"
+              wrapperStyle={{ fontSize: 12, color: '#6b7280', paddingBottom: 8 }}
+              formatter={(value) => (value === 'revenue' ? 'Revenue' : 'Cost')}
+            />
+            <Bar dataKey="cost" fill="#9ca3af" radius={[6, 6, 0, 0]} maxBarSize={30} />
+            <Bar dataKey="revenue" fill="#ec4899" radius={[6, 6, 0, 0]} maxBarSize={30} />
+          </BarChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );
 };
 
 const SalesFunnelChart: React.FC<{ stages: typeof mockTrendSalesFunnel }> = ({ stages }) => {
-  const max = Math.max(...stages.map((stage) => stage.value), 1);
+  const normalizedStages = stages
+    .map((item: any) => ({
+      label: item.stage ?? item.platform ?? 'Stage',
+      value: Number(item.value ?? 0),
+    }))
+    .filter((item: any) => item.label && Number.isFinite(item.value));
+
+  const funnelSummary = useMemo(() => {
+    if (normalizedStages.length === 0) {
+      return {
+        overallConversion: null as number | null,
+        biggestDrop: null as { from: string; to: string; conversion: number } | null,
+      };
+    }
+
+    const first = normalizedStages[0].value;
+    const last = normalizedStages[normalizedStages.length - 1].value;
+    const overallConversion = first > 0 ? (last / first) * 100 : 0;
+
+    let biggestDrop: { from: string; to: string; conversion: number } | null = null;
+    for (let i = 1; i < normalizedStages.length; i += 1) {
+      const prev = normalizedStages[i - 1];
+      const curr = normalizedStages[i];
+      const conversion = prev.value > 0 ? (curr.value / prev.value) * 100 : 0;
+      if (!biggestDrop || conversion < biggestDrop.conversion) {
+        biggestDrop = { from: prev.label, to: curr.label, conversion };
+      }
+    }
+
+    return { overallConversion, biggestDrop };
+  }, [normalizedStages]);
+
   return (
     <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-      <p className="text-sm font-semibold text-gray-900">Sales Funnel</p>
-      <div className="space-y-4">
-        {stages.map((stage) => (
-          <div key={stage.stage} className="space-y-1">
-            <div className="flex items-center justify-between text-xs text-gray-500">
-              <span>{stage.stage}</span>
-              <span>{stage.value.toLocaleString()}</span>
-            </div>
-            <div className="h-6 rounded-full bg-emerald-100">
-              <div className="h-full rounded-full bg-emerald-500" style={{ width: `${(stage.value / max) * 100}%` }} />
-            </div>
-          </div>
-        ))}
+      <p className="text-[15.68px] font-semibold text-gray-900">Sales Funnel</p>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 font-semibold text-gray-700">
+          Overall: {funnelSummary.overallConversion == null ? '-' : `${funnelSummary.overallConversion.toFixed(1)}%`}
+        </span>
+        {funnelSummary.biggestDrop ? (
+          <span className="inline-flex items-center rounded-full bg-orange-50 px-3 py-1 font-semibold text-orange-700">
+            Biggest drop: {funnelSummary.biggestDrop.from} → {funnelSummary.biggestDrop.to} ({funnelSummary.biggestDrop.conversion.toFixed(1)}%)
+          </span>
+        ) : null}
+      </div>
+      <div className="h-72">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={normalizedStages} layout="vertical" margin={{ top: 12, right: 16, left: 18, bottom: 10 }}>
+            <CartesianGrid stroke="#e5e7eb" vertical horizontal={false} />
+            <XAxis
+              type="number"
+              domain={[0, 1400]}
+              ticks={[0, 300, 700, 1000, 1400]}
+              tick={{ fontSize: 11, fill: '#6b7280' }}
+              axisLine={false}
+              tickLine={false}
+            />
+            <YAxis
+              type="category"
+              dataKey="label"
+              tick={{ fontSize: 11, fill: '#6b7280' }}
+              axisLine={false}
+              tickLine={false}
+              width={96}
+            />
+            <RechartsTooltip
+              cursor={{ fill: 'rgba(17,24,39,0.04)' }}
+              formatter={(value: any) => [Number(value).toLocaleString(), 'Leads']}
+              labelStyle={{ color: '#111827', fontWeight: 600 }}
+            />
+            <Bar dataKey="value" fill="#22c55e" radius={[0, 4, 4, 0]} maxBarSize={28} />
+          </BarChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );
 };
 
 const RevenueTrendChart: React.FC<{ data: typeof mockTrendRevenueTrend }> = ({ data }) => {
-  const max = Math.max(...data.map((point) => point.revenue), 1);
-  const points = data
-    .map((point, idx) => {
-      const x = (idx / (data.length - 1)) * 100;
-      const y = 100 - (point.revenue / max) * 100;
-      return `${x},${y}`;
-    })
-    .join(' ');
+  const chartData = useMemo(() => {
+    const windowSize = 3;
+    const safeData = Array.isArray(data) ? data : [];
+    return safeData.map((point, index) => {
+      const start = Math.max(0, index - windowSize + 1);
+      const window = safeData.slice(start, index + 1);
+      const values = window
+        .map((row) => Number((row as any)?.revenue2026))
+        .filter((v) => Number.isFinite(v));
+      const sum = values.reduce((acc, v) => acc + v, 0);
+      const ma = values.length ? sum / values.length : null;
+      return { ...point, movingAvg: ma };
+    });
+  }, [data]);
 
   return (
     <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-      <p className="text-sm font-semibold text-gray-900">Revenue Trend</p>
+      <p className="text-[15.68px] font-semibold text-gray-900">Revenue Trend</p>
       <div className="h-64">
-        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full text-purple-500">
-          <polyline fill="none" stroke="currentColor" strokeWidth="2" points={points} />
-          <polyline fill="rgba(167,139,250,0.2)" stroke="none" points={`0,100 ${points} 100,100`} />
-        </svg>
-      </div>
-      <div className="flex justify-between text-xs text-gray-500">
-        {data.map((point) => (
-          <span key={point.month}>{point.month}</span>
-        ))}
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
+            <defs>
+              <linearGradient id="revenue2026Gradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#7c3aed" stopOpacity={0.22} />
+                <stop offset="95%" stopColor="#7c3aed" stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#e5e7eb" />
+            <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
+            <YAxis
+              tick={{ fontSize: 11, fill: '#6b7280' }}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={(v) => `$${Math.round(Number(v) / 1000)}k`}
+            />
+            <RechartsTooltip
+              cursor={{ fill: 'rgba(17,24,39,0.04)' }}
+              formatter={(value: any, name: any) => [
+                `$${Math.round(Number(value) / 1000)}k`,
+                name === 'revenue2025'
+                  ? '2025 Baseline'
+                  : name === 'movingAvg'
+                    ? '2026 Moving Avg'
+                    : '2026 Actual',
+              ]}
+              labelStyle={{ color: '#111827', fontWeight: 600 }}
+            />
+            <Line
+              type="monotone"
+              dataKey="revenue2025"
+              stroke="#94a3b8"
+              strokeWidth={2}
+              strokeDasharray="5 5"
+              dot={false}
+              activeDot={false}
+            />
+            <Line
+              type="monotone"
+              dataKey="revenue2026"
+              stroke="#7c3aed"
+              strokeWidth={3}
+              connectNulls={false}
+              dot={{ r: 4, strokeWidth: 2, stroke: '#7c3aed', fill: '#fff' }}
+              activeDot={{ r: 6, strokeWidth: 2, stroke: '#7c3aed', fill: '#fff' }}
+            />
+            <Area
+              type="monotone"
+              dataKey="revenue2026"
+              fill="url(#revenue2026Gradient)"
+              stroke="none"
+              connectNulls={false}
+            />
+            <Line
+              type="monotone"
+              dataKey="movingAvg"
+              stroke="#94a3b8"
+              strokeWidth={2}
+              strokeDasharray="6 6"
+              dot={false}
+              activeDot={false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );
 };
 
 const YtdRevenueCard: React.FC<{ data: typeof mockTrendRevenueTrend }> = ({ data }) => {
-  const total = data.reduce((sum, point) => sum + point.revenue, 0);
-  const peak = data.reduce((prev, curr) => (curr.revenue > prev.revenue ? curr : prev), data[0]);
-  const low = data.reduce((prev, curr) => (curr.revenue < prev.revenue ? curr : prev), data[0]);
-  const avg = Math.round(total / data.length);
+  const total2025 = data.reduce((sum, point: any) => sum + Number(point?.revenue2025 ?? 0), 0);
+  const total2026 = data.reduce((sum, point: any) => sum + Number(point?.revenue2026 ?? 0), 0);
+  const actual2026 = data.filter((point: any) => Number(point?.revenue2026 ?? 0) > 0);
+  const peak = actual2026.length
+    ? actual2026.reduce(
+        (prev: any, curr: any) =>
+          Number(curr?.revenue2026 ?? 0) > Number(prev?.revenue2026 ?? 0) ? curr : prev,
+        actual2026[0]
+      )
+    : null;
+  const low = actual2026.length
+    ? actual2026.reduce(
+        (prev: any, curr: any) =>
+          Number(curr?.revenue2026 ?? 0) < Number(prev?.revenue2026 ?? 0) ? curr : prev,
+        actual2026[0]
+      )
+    : null;
+  const avg = Math.round(actual2026.length ? total2026 / actual2026.length : 0);
+  const annualTarget = 650_000;
+  const targetProgress = annualTarget > 0 ? Math.min(100, (total2026 / annualTarget) * 100) : 0;
   return (
     <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-      <p className="text-sm font-semibold text-gray-900">YTD revenue</p>
-      <p className="text-3xl font-semibold text-indigo-600">${(total / 1000).toFixed(0)}K</p>
-      <p className="text-xs text-gray-500">+2.5% from last period</p>
-      <div className="space-y-2 text-sm">
+      <p className="text-[15.68px] font-semibold text-gray-900">YTD revenue</p>
+      <div className="space-y-1">
+        <p className="text-3xl font-semibold text-indigo-600">${Math.round(total2026 / 1000).toLocaleString('en-US')}k</p>
+        <div className="text-xs text-gray-400">2025 total: ${Math.round(total2025 / 1000).toLocaleString('en-US')}k</div>
+        <div className="text-xs text-emerald-600 font-semibold">2026 just started - showing YTD so far</div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-700 font-semibold">Pacing</span>
+          <span className="text-gray-500">{targetProgress.toFixed(0)}% of annual target</span>
+        </div>
+        <div className="h-2 w-full rounded-full bg-gray-100 overflow-hidden">
+          <div className="h-full rounded-full bg-indigo-600" style={{ width: `${targetProgress}%` }} />
+        </div>
+        <div className="flex items-center justify-between text-xs text-gray-500">
+          <span>${Math.round(total2026 / 1000).toLocaleString('en-US')}k</span>
+          <span>${Math.round(annualTarget / 1000).toLocaleString('en-US')}k</span>
+        </div>
+      </div>
+
+      <div className="space-y-3 text-sm">
         <div className="flex items-center justify-between">
-          <span className="text-gray-500">Peak: ${peak.revenue.toLocaleString()} ({peak.month})</span>
-          <span className="text-emerald-600 text-xs">+2.8%</span>
+          <div className="flex items-center gap-3">
+            <span className="h-8 w-1 rounded-full bg-emerald-500" />
+            <span className="text-gray-700">Peak: {peak ? `$${Math.round(Number(peak?.revenue2026 ?? 0) / 1000).toLocaleString('en-US')}k (${peak?.month ?? '-'})` : '-'}</span>
+          </div>
+          <span className="text-emerald-600 text-xs font-semibold">↗ 8.2%</span>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-gray-500">Lowest: ${low.revenue.toLocaleString()} ({low.month})</span>
-          <span className="text-red-500 text-xs">-3.7%</span>
+          <div className="flex items-center gap-3">
+            <span className="h-8 w-1 rounded-full bg-red-500" />
+            <span className="text-gray-700">Lowest: {low ? `$${Math.round(Number(low?.revenue2026 ?? 0) / 1000).toLocaleString('en-US')}k (${low?.month ?? '-'})` : '-'}</span>
+          </div>
+          <span className="text-red-500 text-xs font-semibold">↘ 8.2%</span>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-gray-500">Average: ${avg.toLocaleString()}</span>
-          <span className="text-emerald-600 text-xs">+2.3%</span>
+          <div className="flex items-center gap-3">
+            <span className="h-8 w-1 rounded-full bg-amber-500" />
+            <span className="text-gray-700">Average: ${Math.round(avg / 1000).toLocaleString('en-US')}k</span>
+          </div>
+          <span className="text-emerald-600 text-xs font-semibold">↗ 8.2%</span>
         </div>
       </div>
     </div>
   );
 };
 
+const formatUsdCompact = (value: unknown) => {
+  const numeric =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number(String(value).replace(/[^0-9.-]/g, ''))
+        : Number(value);
+
+  if (!Number.isFinite(numeric)) return '$0';
+  if (Math.abs(numeric) < 1000) return `$${Math.round(numeric).toLocaleString('en-US')}`;
+
+  const formatted = new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    compactDisplay: 'short',
+    maximumFractionDigits: Math.abs(numeric) >= 1_000_000 ? 1 : 0,
+  }).format(numeric);
+
+  return `$${formatted}`;
+};
+
 const LeadSourceTable: React.FC<{ sources: typeof mockTrendLeadSources }> = ({ sources }) => (
   <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-    <p className="text-sm font-semibold text-gray-900">Where Leads Come From</p>
+    <p className="text-[15.68px] font-semibold text-gray-900">Where Leads Come From</p>
     <div className="overflow-x-auto">
       <table className="min-w-full text-sm">
         <thead>
-          <tr className="text-left text-xs uppercase  text-gray-500">
-            <th className="py-2 pr-4">Source</th>
-            <th className="py-2 pr-4">Leads</th>
-            <th className="py-2 pr-4">Cost</th>
-            <th className="py-2 pr-4">Revenue</th>
-            <th className="py-2">ROI</th>
+          <tr className="text-xs uppercase text-gray-500">
+            <th className="py-2 pr-4 text-left">Source</th>
+            <th className="py-2 pr-4 text-center">Leads</th>
+            <th className="py-2 pr-4 text-center">Cost</th>
+            <th className="py-2 pr-4 text-center">Revenue</th>
+            <th className="py-2 text-center">ROI</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
           {sources.map((row) => (
             <tr key={row.source} className="text-gray-800">
-              <td className="py-3 pr-4 font-semibold">{row.source}</td>
-              <td className="py-3 pr-4">{row.leads}</td>
-              <td className="py-3 pr-4">${row.cost.toLocaleString()}</td>
-              <td className="py-3 pr-4">${row.revenue.toLocaleString()}</td>
-              <td className="py-3">{row.roi}</td>
+              <td className="py-3 pr-4 text-left font-semibold">{row.source}</td>
+              <td className="py-3 pr-4 text-center">{row.leads}</td>
+              <td className="py-3 pr-4 text-center">{formatUsdCompact(row.cost)}</td>
+              <td className="py-3 pr-4 text-center">{formatUsdCompact(row.revenue)}</td>
+              <td className="py-3 text-center">{row.roi}</td>
             </tr>
           ))}
         </tbody>
@@ -1357,24 +1790,24 @@ const LeadSourceTable: React.FC<{ sources: typeof mockTrendLeadSources }> = ({ s
 
 const SalesRepTable: React.FC<{ reps: typeof mockTrendSalesReps }> = ({ reps }) => (
   <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-    <p className="text-sm font-semibold text-gray-900">Who Closed The Deal</p>
+    <p className="text-[15.68px] font-semibold text-gray-900">Who Closed The Deal</p>
     <div className="overflow-x-auto">
       <table className="min-w-full text-sm">
         <thead>
-          <tr className="text-left text-xs uppercase  text-gray-500">
-            <th className="py-2 pr-4">Sales Rep</th>
-            <th className="py-2 pr-4">Leads Assigned</th>
-            <th className="py-2 pr-4">Conversion Rate</th>
-            <th className="py-2">Revenue Closed</th>
+          <tr className="text-xs uppercase text-gray-500">
+            <th className="py-2 pr-4 text-left">Sales Rep</th>
+            <th className="py-2 pr-4 text-center">Leads Assigned</th>
+            <th className="py-2 pr-4 text-center">Conversion Rate</th>
+            <th className="py-2 text-center">Revenue Closed</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
           {reps.map((rep) => (
             <tr key={rep.rep} className="text-gray-800">
-              <td className="py-3 pr-4 font-semibold">{rep.rep}</td>
-              <td className="py-3 pr-4">{rep.leadsAssigned}</td>
-              <td className="py-3 pr-4">{rep.conversionRate}</td>
-              <td className="py-3">{rep.revenue}</td>
+              <td className="py-3 pr-4 text-left font-semibold">{rep.rep}</td>
+              <td className="py-3 pr-4 text-center">{rep.leadsAssigned}</td>
+              <td className="py-3 pr-4 text-center">{rep.conversionRate}</td>
+              <td className="py-3 text-center">{formatUsdCompact(rep.revenue)}</td>
             </tr>
           ))}
         </tbody>
@@ -1385,60 +1818,199 @@ const SalesRepTable: React.FC<{ reps: typeof mockTrendSalesReps }> = ({ reps }) 
 
 const CrmStageChart: React.FC<{ stages: typeof mockCrmStages }> = ({ stages }) => {
   const max = Math.max(...stages.map((stage) => stage.value), 1);
+  const data = stages.map((stage) => ({ name: stage.label, value: stage.value, color: stage.color }));
   return (
-    <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-      <p className="text-sm font-semibold text-gray-900">Pipeline status</p>
-      <div className="space-y-4">
-        {stages.map((stage) => (
-          <div key={stage.label} className="space-y-1">
-            <div className="flex items-center justify-between text-xs text-gray-500">
-              <span>{stage.label}</span>
-              <span>{stage.value.toFixed(1)}x</span>
-            </div>
-            <div className="h-6 rounded-full bg-gray-100">
-              <div className="h-full rounded-full" style={{ width: `${(stage.value / max) * 100}%`, backgroundColor: stage.color }} />
-            </div>
-          </div>
-        ))}
+    <div className={themePanelCompactClass}>
+      <p className="text-sm font-semibold theme-text">Pipeline status</p>
+      <div className="h-56">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} layout="vertical" margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
+            <CartesianGrid strokeDasharray="2 2" stroke="var(--theme-border)" />
+            <XAxis
+              type="number"
+              domain={[0, Math.max(3, Math.ceil(max))]}
+              tick={{ fontSize: 10, fill: 'var(--theme-muted)' }}
+              axisLine={{ stroke: 'var(--theme-border)' }}
+              tickLine={{ stroke: 'var(--theme-border)' }}
+            />
+            <YAxis
+              type="category"
+              dataKey="name"
+              tick={{ fontSize: 10, fill: 'var(--theme-muted)' }}
+              axisLine={{ stroke: 'var(--theme-border)' }}
+              tickLine={{ stroke: 'var(--theme-border)' }}
+              width={90}
+            />
+            <RechartsTooltip
+              cursor={{ fill: 'rgba(148,163,184,0.16)' }}
+              formatter={(value: any) => [`${Number(value).toFixed(1)}x`, 'Stage strength']}
+            />
+            <Bar dataKey="value" radius={[0, 8, 8, 0]} maxBarSize={28}>
+              {data.map((entry) => (
+                <Cell key={entry.name} fill={entry.color} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );
 };
 
 const CrmAgeDonut: React.FC<{ ranges: typeof mockCrmAgeRange }> = ({ ranges }) => {
-  const total = ranges.reduce((sum, range) => sum + range.customers, 0) || 1;
-  let cumulative = 0;
-  const gradients = ranges.map((range) => {
-    const from = (cumulative / total) * 100;
-    cumulative += range.customers;
-    const to = (cumulative / total) * 100;
-    return `${range.color} ${from}% ${to}%`;
-  });
+  const [activeIndex, setActiveIndex] = useState(-1);
+
+  const safeRanges = useMemo(
+    () =>
+      (Array.isArray(ranges) ? ranges : []).map((range) => ({
+        label: String((range as any)?.label ?? ''),
+        customers: Number((range as any)?.customers ?? 0),
+        value: String((range as any)?.value ?? ''),
+        roi: String((range as any)?.roi ?? ''),
+        color: String((range as any)?.color ?? '#60a5fa'),
+      })),
+    [ranges]
+  );
+
+  const total = safeRanges.reduce((sum, range) => sum + (Number.isFinite(range.customers) ? range.customers : 0), 0);
+  const chartData = useMemo(
+    () => safeRanges.map((range) => ({ name: range.label, value: range.customers, color: range.color })),
+    [safeRanges]
+  );
+
+  const parseCompactMoney = (raw: string) => {
+    const input = String(raw ?? '').trim();
+    if (!input) return null;
+    const normalized = input.replace(/[,$\s]/g, '');
+    const match = normalized.match(/([+-]?[0-9]*\.?[0-9]+)([kKmMbB])?/);
+    if (!match) return null;
+    const base = Number(match[1]);
+    if (!Number.isFinite(base)) return null;
+    const unit = (match[2] || '').toLowerCase();
+    const multiplier = unit === 'b' ? 1_000_000_000 : unit === 'm' ? 1_000_000 : unit === 'k' ? 1_000 : 1;
+    return base * multiplier;
+  };
+
+  const formatCompact = (value: number) => {
+    try {
+      return new Intl.NumberFormat('en-US', {
+        notation: 'compact',
+        maximumFractionDigits: 1,
+      }).format(value);
+    } catch {
+      const abs = Math.abs(value);
+      if (abs >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
+      if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+      if (abs >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+      return `${Math.round(value)}`;
+    }
+  };
+
+  const formatAvg = (value: number | null) => {
+    if (value == null || !Number.isFinite(value)) return '—';
+    if (Math.abs(value) < 1000) return value.toFixed(1);
+    return formatCompact(value);
+  };
 
   return (
-    <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-      <p className="text-sm font-semibold text-gray-900">Age Range</p>
+    <div className={themePanelCompactClass}>
+      <p className="text-sm font-semibold theme-text">Age Range</p>
       <div className="flex items-center gap-4">
-        <div className="h-36 w-36 rounded-full" style={{ background: `conic-gradient(${gradients.join(', ')})` }}>
-          <div className="h-full w-full flex items-center justify-center">
-            <div className="h-18 w-18 rounded-full bg-white flex flex-col items-center justify-center">
-              <p className="text-xl font-semibold text-gray-900">{total}</p>
-              <p className="text-xs text-gray-500">Customers</p>
-            </div>
+        <div className="relative h-36 w-36 flex-shrink-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={chartData}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                innerRadius="55%"
+                outerRadius="90%"
+                paddingAngle={3}
+                stroke="#fff"
+                strokeWidth={2}
+                activeIndex={activeIndex}
+                activeShape={(props) => (
+                  <Sector {...props} outerRadius={(Number(props.outerRadius) || 0) + 6} />
+                )}
+                onMouseEnter={(_, index) => setActiveIndex(index)}
+                onMouseLeave={() => setActiveIndex(-1)}
+              >
+                {chartData.map((entry) => (
+                  <Cell key={entry.name} fill={entry.color} />
+                ))}
+              </Pie>
+              <RechartsTooltip
+                formatter={(value: number, _name: string, payload) => {
+                  const rowName = (payload as { payload?: { name?: string } } | undefined)?.payload?.name;
+                  return [Number(value ?? 0).toLocaleString('en-US'), rowName];
+                }}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none select-none">
+            <p className="text-[10px] uppercase text-gray-400 tracking-wide">TOTAL</p>
+            <p className="text-xl font-semibold theme-text leading-tight whitespace-nowrap">{total.toLocaleString('en-US')}</p>
+            <p className="text-[10px] theme-muted">Customers</p>
           </div>
         </div>
-        <div className="space-y-2 text-sm">
-          {ranges.map((range) => (
-            <div key={range.label} className="grid grid-cols-4 gap-2 items-center">
-              <div className="flex items-center gap-2">
-                <span className="h-5 w-5 rounded-full flex-shrink-0" style={{ backgroundColor: range.color }} />
-                <span className="text-gray-700">{range.label}</span>
-              </div>
-              <span className="text-gray-500">{range.customers}</span>
-              <span className="text-gray-500">{range.value}</span>
-              <span className="font-semibold text-gray-900">{range.roi}</span>
+
+        <div className="flex-1 min-w-0">
+          <div className="space-y-3">
+            <p className="text-sm font-semibold theme-text">Lead ที่มีมูลค่า</p>
+
+            <div className="space-y-2">
+              {safeRanges.map((range) => {
+                const isActive = activeIndex >= 0 && chartData[activeIndex]?.name === range.label;
+                const customers = Number.isFinite(range.customers) ? range.customers : 0;
+                const totalValue = parseCompactMoney(range.value);
+                const avg = totalValue != null && customers > 0 ? totalValue / customers : null;
+
+                return (
+                  <div
+                    key={range.label}
+                    className="rounded-2xl border px-4 py-3"
+                    style={{
+                      borderColor: 'var(--theme-border)',
+                      backgroundColor: isActive ? 'rgba(148,163,184,0.10)' : 'transparent',
+                    }}
+                  >
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-[200px,1fr] md:items-center">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: range.color }} />
+                        <span className="text-xs theme-muted truncate">{range.label}</span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="text-center">
+                          <p className="text-[10px] uppercase theme-muted">Lead ทั้งหมด</p>
+                          <p className="mt-1 text-base font-semibold tabular-nums" style={{ color: range.color }}>
+                            {customers.toLocaleString('en-US')}
+                          </p>
+                        </div>
+
+                        <div className="text-center">
+                          <p className="text-[10px] uppercase theme-muted">THB</p>
+                          <p className="mt-1 text-base font-semibold tabular-nums" style={{ color: range.color }}>
+                            {range.value}
+                          </p>
+                        </div>
+
+                        <div className="text-center">
+                          <p className="text-[10px] uppercase theme-muted">ค่าเฉลี่ย</p>
+                          <p className="mt-1 text-base font-semibold tabular-nums" style={{ color: range.color }}>
+                            {formatAvg(avg)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          ))}
+          </div>
         </div>
       </div>
     </div>
@@ -1446,18 +2018,23 @@ const CrmAgeDonut: React.FC<{ ranges: typeof mockCrmAgeRange }> = ({ ranges }) =
 };
 
 const LeadTrackingTable: React.FC<{ leads: typeof mockCrmLeads }> = ({ leads }) => (
-  <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
+  <div className={themePanelCompactClass}>
     <div className="flex items-center justify-between">
       <div>
-        <p className="text-sm font-semibold text-gray-900">Lead Tracking</p>
-        <p className="text-xs text-gray-500">7 leads</p>
+        <p className="text-sm font-semibold theme-text">Lead Tracking</p>
+        <p className="text-xs theme-muted">7 leads</p>
       </div>
-      <button className="px-3 py-1 rounded-full border border-gray-200 text-xs">Export</button>
+      <button
+        className="px-3 py-1 rounded-full border text-xs theme-text"
+        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'transparent' }}
+      >
+        Export
+      </button>
     </div>
     <div className="overflow-x-auto">
       <table className="min-w-full text-sm">
         <thead>
-          <tr className="text-left text-xs uppercase  text-gray-500">
+          <tr className="text-left text-xs uppercase theme-muted">
             <th className="py-2 pr-4">Lead</th>
             <th className="py-2 pr-4">Company</th>
             <th className="py-2 pr-4">Source</th>
@@ -1468,24 +2045,23 @@ const LeadTrackingTable: React.FC<{ leads: typeof mockCrmLeads }> = ({ leads }) 
         </thead>
         <tbody className="divide-y divide-gray-100">
           {leads.map((lead) => (
-            <tr key={`${lead.lead}-${lead.company}`} className="text-gray-800">
+            <tr key={`${lead.lead}-${lead.company}`} className="theme-text">
               <td className="py-3 pr-4">
                 <p className="font-semibold">{lead.lead}</p>
-                <p className="text-xs text-gray-400">{lead.lead.toLowerCase().replace(' ', '.')}@example.com</p>
+                <p className="text-xs theme-muted">{lead.lead.toLowerCase().replace(' ', '.')}@example.com</p>
               </td>
               <td className="py-3 pr-4">{lead.company}</td>
               <td className="py-3 pr-4">{lead.source}</td>
               <td className="py-3 pr-4">
                 <span
-                  className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                    lead.status === 'Converted'
-                      ? 'bg-emerald-50 text-emerald-600'
-                      : lead.status === 'In Progress'
+                  className={`px-3 py-1 rounded-full text-xs font-semibold ${lead.status === 'Converted'
+                    ? 'bg-emerald-50 text-emerald-600'
+                    : lead.status === 'In Progress'
                       ? 'bg-amber-50 text-amber-600'
                       : lead.status === 'Lost'
-                      ? 'bg-red-50 text-red-600'
-                      : 'bg-blue-50 text-blue-600'
-                  }`}
+                        ? 'bg-red-50 text-red-600'
+                        : 'bg-blue-50 text-blue-600'
+                    }`}
                 >
                   {lead.status}
                 </span>
@@ -1504,26 +2080,40 @@ const CommerceFunnelChart: React.FC<{ steps: typeof mockCommerceConversionFunnel
   const max = steps[0]?.value || 1;
   const animated = useAnimatedReveal();
   return (
-    <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-      <p className="text-sm font-semibold text-gray-900">Conversion Rate</p>
-      <div className="space-y-2">
-        {steps.map((step, index) => {
-          const width = ((steps.length - index) / steps.length) * 100;
+    <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b1220] via-[#0b1220] to-[#101a33] p-6 shadow-lg">
+      <div className="space-y-1">
+        <p className="text-sm font-semibold text-white">Conversion Rate</p>
+        <p className="text-xs text-sky-100/70">User journey effectiveness</p>
+      </div>
+
+      <div className="mt-6 space-y-5">
+        {steps.map((step) => {
+          const width = Math.max(0, Math.min(100, (Number(step.value) / Math.max(1, max)) * 100));
+          const highlightColor = adjustHexColor(step.color, 0.2);
           return (
-            <div key={step.label} className="flex flex-col items-center gap-1">
-              <div
-                className="rounded-full h-8 transition-all duration-700 ease-out"
-                style={{ width: animated ? `${width}%` : '0%', backgroundColor: step.color }}
-              />
-              <div className="text-xs text-gray-600 flex items-center gap-2">
-                <span className="font-semibold text-gray-900">{step.label}</span>
-                <span>{step.value}%</span>
+            <div key={step.label} className="flex flex-col items-center gap-2">
+              <div className="w-full max-w-[620px]">
+                <div className="h-9 rounded-full overflow-hidden" style={{ backgroundColor: 'rgba(148,163,184,0.14)' }}>
+                  <div
+                    className="h-full rounded-full transition-all duration-700 ease-out"
+                    style={{
+                      width: animated ? `${width}%` : '0%',
+                      background: `linear-gradient(90deg, ${step.color}, ${highlightColor})`,
+                      filter: 'brightness(1.05)',
+                    }}
+                  />
+                </div>
+              </div>
+              <div className="text-xs flex items-center gap-2">
+                <span className="font-semibold text-white">{step.label}</span>
+                <span className="text-sky-100/70">{step.value}%</span>
               </div>
             </div>
           );
         })}
       </div>
-      <div className="flex flex-wrap gap-3 text-xs text-gray-500">
+
+      <div className="mt-6 flex flex-wrap gap-4 text-xs text-sky-100/70">
         {steps.map((step) => (
           <span key={step.label} className="flex items-center gap-1">
             <span className="h-2 w-2 rounded-full" style={{ backgroundColor: step.color }} />
@@ -1549,26 +2139,6 @@ const SeoIssuesCard: React.FC<{ issues: typeof mockSeoIssues }> = ({ issues }) =
         </div>
       ))}
     </div>
-  </div>
-);
-
-const SectionTitle: React.FC<{ title: string; subtitle?: string; actions?: React.ReactNode; badge?: React.ReactNode }> = ({
-  title,
-  subtitle,
-  actions,
-  badge,
-}) => (
-  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-    <div className="space-y-2 max-w-4xl">
-      <h2 className="text-[24px] leading-snug md:text-[24px] font-semibold text-gray-900  break-words">{title}</h2>
-      {subtitle && <p className="text-gray-500 !text-[16px] !leading-relaxed !mb-0 break-words">{subtitle}</p>}
-    </div>
-    {(badge || actions) && (
-      <div className="flex items-center gap-2">
-        {badge}
-        {actions}
-      </div>
-    )}
   </div>
 );
 
@@ -1682,14 +2252,14 @@ const ProfitabilityChart: React.FC<{ data: typeof mockCommerceProfitability }> =
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="#21c45d" />
             <XAxis dataKey="label" tickLine={false} tick={{ fontSize: 12, fill: '#5fa5fa' }} />
             <YAxis tickLine={false} tick={{ fontSize: 12, fill: '#fa7516' }} tickFormatter={(value) => `${(value / 1000).toFixed(0)}k`} />
-            <RechartsTooltip formatter={(value, name) => [`THB ${Number(value).toLocaleString('en-US')}`, name]} />
+            <RechartsTooltip formatter={(value, name) => [`$${Number(value).toLocaleString('en-US')}`, name]} />
             <Bar dataKey="value" barSize={32} radius={[12, 12, 0, 0]}>
               {data.map((entry, index) => {
                 const colors = ['#21c45d', '#5fa5fa', '#fa7516'];
                 const color = colors[index % colors.length];
                 return (
-                  <Cell 
-                    key={entry.label} 
+                  <Cell
+                    key={entry.label}
                     fill={color}
                     fillOpacity={0.9}
                   />
@@ -1700,7 +2270,7 @@ const ProfitabilityChart: React.FC<{ data: typeof mockCommerceProfitability }> =
         </ResponsiveContainer>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                {data.map((item, index) => {
+        {data.map((item, index) => {
           const colors = ['#21c45d', '#5fa5fa', '#fa7516'];
           const color = colors[index % colors.length];
           return (
@@ -1708,7 +2278,7 @@ const ProfitabilityChart: React.FC<{ data: typeof mockCommerceProfitability }> =
               <span className="h-3 w-3 rounded-full" style={{ backgroundColor: color }} />
               <div>
                 <p className="font-semibold text-gray-900">{item.label}</p>
-                <p className="text-xs text-gray-500">THB {item.value.toLocaleString('en-US')}</p>
+                <p className="text-xs text-gray-500">${item.value.toLocaleString('en-US')}</p>
               </div>
             </div>
           );
@@ -1763,7 +2333,7 @@ const RevenueOrdersTrendChart: React.FC<{ data: typeof mockCommerceRevenueTrend 
                 <RechartsTooltip
                   formatter={(value, name) => {
                     if (name === 'orders') return [Number(value).toLocaleString('en-US'), 'Orders'];
-                    return [`THB ${Number(value).toLocaleString('en-US')}`, 'Revenue'];
+                    return [`$${Number(value).toLocaleString('en-US')}`, 'Revenue'];
                   }}
                 />
                 <Bar
@@ -1793,7 +2363,7 @@ const RevenueOrdersTrendChart: React.FC<{ data: typeof mockCommerceRevenueTrend 
             <p className="text-base font-semibold text-gray-900">Revenue & Orders Summary</p>
             <p className="text-sm text-gray-500">Key insights from 6-month performance</p>
           </div>
-          
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-3">
               <div className="flex items-center gap-2">
@@ -1803,15 +2373,15 @@ const RevenueOrdersTrendChart: React.FC<{ data: typeof mockCommerceRevenueTrend 
               <div className="space-y-2">
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-gray-500">Total Revenue</span>
-                  <span className="text-sm font-semibold text-gray-900">THB 254K</span>
+                  <span className="text-sm font-semibold text-gray-900">$254K</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-gray-500">Average Monthly</span>
-                  <span className="text-sm font-semibold text-gray-900">THB 42.3K</span>
+                  <span className="text-sm font-semibold text-gray-900">$42.3K</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-gray-500">Peak Month</span>
-                  <span className="text-sm font-semibold text-gray-900">May (47K)</span>
+                  <span className="text-sm font-semibold text-gray-900">May ($47K)</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-gray-500">Growth Trend</span>
@@ -1819,7 +2389,7 @@ const RevenueOrdersTrendChart: React.FC<{ data: typeof mockCommerceRevenueTrend 
                 </div>
               </div>
             </div>
-            
+
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <span className="h-2.5 w-2.5 rounded-full bg-[#ef4444]" />
@@ -1840,12 +2410,12 @@ const RevenueOrdersTrendChart: React.FC<{ data: typeof mockCommerceRevenueTrend 
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-gray-500">Avg Order Value</span>
-                  <span className="text-sm font-semibold text-gray-900">THB 159</span>
+                  <span className="text-sm font-semibold text-gray-900">$159</span>
                 </div>
               </div>
             </div>
           </div>
-          
+
           <div className="pt-3 border-t border-gray-100">
             <div className="flex items-center justify-between">
               <span className="text-xs text-gray-500">Revenue per Order Trend</span>
@@ -1862,57 +2432,106 @@ const RevenueOrdersTrendChart: React.FC<{ data: typeof mockCommerceRevenueTrend 
 };
 
 const DonutChart: React.FC<{ segments: { name: string; value: number; color: string }[] }> = ({ segments }) => {
-  const total = segments.reduce((sum, seg) => sum + seg.value, 0);
-  let cumulative = 0;
-  const animated = useAnimatedReveal();
-  const gradients = segments.map((seg) => {
-    const from = (cumulative / total) * 100;
-    cumulative += seg.value;
-    const to = (cumulative / total) * 100;
-    return `${seg.color} ${from}% ${to}%`;
-  });
+  const [activeIndex, setActiveIndex] = useState(-1);
+
+  const safeSegments = useMemo(
+    () =>
+      (Array.isArray(segments) ? segments : [])
+        .map((seg) => ({
+          name: String((seg as any)?.name ?? (seg as any)?.label ?? ''),
+          value: Number.isFinite(seg?.value) ? Number(seg.value) : 0,
+          color: String(seg?.color ?? '#60a5fa'),
+        }))
+        .filter((seg) => seg.name),
+    [segments]
+  );
+
+  const total = safeSegments.reduce((sum, seg) => sum + seg.value, 0);
+
+  const compactCurrency = (value: number) => {
+    try {
+      return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        notation: 'compact',
+        maximumFractionDigits: 2,
+      }).format(value);
+    } catch (_err) {
+      const abs = Math.abs(value);
+      if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+      if (abs >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+      return `$${Math.round(value).toLocaleString('en-US')}`;
+    }
+  };
+
+  const formatMoney = (value: number) => `$${Math.round(value).toLocaleString('en-US')}`;
+
+  if (!safeSegments.length) {
+    return <p className="text-sm text-gray-500">No data available.</p>;
+  }
+
   return (
-    <div className="flex items-center justify-between gap-8">
-      <div
-        className="h-64 w-64 rounded-full transition-transform duration-700 ease-out flex-shrink-0 hover:scale-110 cursor-pointer"
-        style={{
-          background: `conic-gradient(${gradients.join(', ')})`,
-          transform: animated ? 'scale(1)' : 'scale(0.85)',
-          animation: animated ? 'continuousRotate 3s linear forwards' : 'none',
-        }}
-      >
-        <div className="h-full w-full flex items-center justify-center">
-          <div
-            className="h-32 w-32 rounded-full flex flex-col items-center justify-center text-center border"
-            style={{
-              backgroundColor: 'var(--surface-muted, var(--theme-surface))',
-              borderColor: 'var(--theme-border)',
-              boxShadow: 'inset 0 0 30px rgba(0,0,0,0.2)',
-            }}
-          >
-            <p className="text-xs font-semibold uppercase tracking-wide theme-muted">Total</p>
-            <p className="text-2xl font-semibold theme-text">{(total / 1000000).toFixed(1)}M</p>
+    <div className="flex items-center justify-center w-full">
+      <div className="flex flex-col md:flex-row items-center md:items-center gap-5 w-full">
+        <div className="relative w-full max-w-[320px]">
+          <ResponsiveContainer width="100%" height={280}>
+            <PieChart>
+              <Pie
+                data={safeSegments}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                innerRadius="58%"
+                outerRadius="92%"
+                paddingAngle={3}
+                stroke="#fff"
+                strokeWidth={3}
+                activeIndex={activeIndex}
+                activeShape={(props) => (
+                  <Sector {...props} outerRadius={(Number(props.outerRadius) || 0) + 6} />
+                )}
+                onMouseEnter={(_, index) => setActiveIndex(index)}
+                onMouseLeave={() => setActiveIndex(-1)}
+              >
+                {safeSegments.map((entry) => (
+                  <Cell key={entry.name} fill={entry.color} />
+                ))}
+              </Pie>
+              <RechartsTooltip
+                formatter={(value: number, _name: string, payload) => {
+                  const rowName = (payload as { payload?: { name?: string } } | undefined)?.payload?.name;
+                  return [formatMoney(typeof value === 'number' ? value : Number(value)), rowName];
+                }}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none select-none">
+            <p className="text-[10px] uppercase text-gray-400 tracking-wide">TOTAL</p>
+            <p className="text-3xl font-semibold text-gray-900 leading-tight whitespace-nowrap">{compactCurrency(total)}</p>
           </div>
         </div>
-      </div>
-      <div className="flex-1 space-y-4 text-sm">
-        {segments.map((seg) => (
-          <div
-            key={seg.name}
-            className="rounded-2xl p-3 flex items-center justify-between transition-all duration-300 hover:translate-x-1 hover:shadow-lg"
-            style={{
-              backgroundColor: 'var(--surface-muted, var(--theme-surface))',
-              border: '1px solid var(--theme-border)',
-              boxShadow: 'var(--theme-card-shadow)',
-            }}
-          >
-            <div className="flex items-center gap-3">
-              <span className="h-3.5 w-3.5 rounded-full flex-shrink-0" style={{ backgroundColor: seg.color }} />
-              <span className="font-medium theme-text">{seg.name}</span>
+
+        <div className="w-full md:flex-1 space-y-2 text-sm">
+          {safeSegments.map((seg) => (
+            <div
+              key={seg.name}
+              className="rounded-2xl px-4 py-3 flex items-center justify-between border"
+              style={{
+                backgroundColor: 'var(--theme-surface)',
+                borderColor: 'var(--theme-border)',
+                boxShadow: 'var(--theme-card-shadow)',
+              }}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="h-4 w-4 rounded-full flex-shrink-0" style={{ backgroundColor: seg.color }} />
+                <span className="font-semibold theme-text truncate">{seg.name}</span>
+              </div>
+              <span className="font-semibold theme-text whitespace-nowrap">{formatMoney(seg.value)}</span>
             </div>
-            <span className="font-semibold theme-text">THB {(seg.value / 1000000).toFixed(2)}M</span>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -1939,7 +2558,20 @@ const SeoSparkline: React.FC<{ values: number[]; color?: string }> = ({ values, 
 };
 
 const SearchVisibilityCard: React.FC<{ snapshot: typeof mockSeoSnapshots }> = ({ snapshot }) => {
-  const gaugeValue = snapshot.healthScore;
+  const gaugeValue = Math.min(100, Math.max(0, Number(snapshot.healthScore ?? 0)));
+  const healthColor = (() => {
+    if (gaugeValue <= 20) return '#ef4444'; // red
+    if (gaugeValue <= 40) return '#f97316'; // red-orange
+    if (gaugeValue <= 60) return '#fb923c'; // orange
+    if (gaugeValue <= 80) return '#22c55e'; // green
+    return '#16a34a'; // dark green
+  })();
+
+  const healthSegments = [
+    { name: 'Health', value: gaugeValue, color: healthColor },
+    { name: 'Remaining', value: Math.max(0, 100 - gaugeValue), color: '#f3f4f6' },
+  ];
+
   return (
     <div className="rounded-3xl border border-gray-100 p-6 space-y-6 bg-white">
       <div className="flex items-center justify-between">
@@ -1949,35 +2581,57 @@ const SearchVisibilityCard: React.FC<{ snapshot: typeof mockSeoSnapshots }> = ({
         </div>
         <span className="text-xs text-gray-400">Updated 5 min ago</span>
       </div>
-      <div className="flex flex-col lg:flex-row lg:items-center gap-8">
-        <div className="flex items-center gap-6">
-          <div className="relative h-36 w-36">
-            <div
-              className="absolute inset-0 rounded-full"
-              style={{
-                background: `conic-gradient(#f97316 ${gaugeValue}%, #f3f4f6 ${gaugeValue}% 100%)`,
-              }}
-            />
-            <div className="absolute inset-3 rounded-full bg-white flex flex-col items-center justify-center">
-              <p className="text-3xl font-semibold text-gray-900">{gaugeValue}%</p>
-              <p className="text-xs uppercase  text-gray-500">Health</p>
-            </div>
-          </div>
-          <div className="space-y-4 text-gray-900">
-            <div>
-              <p className="text-[11px] uppercase  text-gray-500">Avg. Position</p>
-              <p className="text-3xl font-semibold">{snapshot.avgPosition}</p>
-            </div>
-            <div>
-              <p className="text-[11px] uppercase  text-gray-500">Organic Sessions</p>
-              <p className="text-3xl font-semibold">{snapshot.organicSessions.toLocaleString('en-US')}</p>
+      <div className="grid grid-cols-1 lg:grid-cols-[auto_auto_1fr] gap-8 lg:items-center">
+        <div
+          className="shrink-0 rounded-3xl border p-4 shadow-sm"
+          style={{
+            borderColor: hexToRgba(healthColor, 0.45),
+            background: `linear-gradient(135deg, ${hexToRgba(healthColor, 0.16)}, ${hexToRgba('#ffffff', 0.95)})`,
+          }}
+        >
+          <div className="relative h-24 w-24">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={healthSegments}
+                  dataKey="value"
+                  innerRadius={30}
+                  outerRadius={42}
+                  paddingAngle={2}
+                  startAngle={90}
+                  endAngle={-270}
+                  isAnimationActive={false}
+                  stroke="#ffffff"
+                  strokeWidth={3}
+                >
+                  {healthSegments.map((entry) => (
+                    <Cell key={entry.name} fill={entry.color} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+              <p className="text-2xl font-semibold text-gray-900 leading-none">{gaugeValue}%</p>
+              <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Health</p>
             </div>
           </div>
         </div>
-        <div className="flex-1 border-t lg:border-t-0 lg:border-l border-dashed border-gray-200 pt-6 lg:pt-0 lg:pl-8">
-          <p className="text-[11px] uppercase  text-gray-500">Sessions (7d)</p>
+
+        <div className="min-w-0 grid grid-cols-2 gap-6 text-gray-900">
+          <div className="min-w-0">
+            <p className="text-[11px] uppercase tracking-wide text-gray-500">Avg. Position</p>
+            <p className="mt-1 text-3xl font-semibold truncate">{snapshot.avgPosition}</p>
+          </div>
+          <div className="min-w-0">
+            <p className="text-[11px] uppercase tracking-wide text-gray-500">Organic Sessions</p>
+            <p className="mt-1 text-3xl font-semibold truncate">{snapshot.organicSessions.toLocaleString('en-US')}</p>
+          </div>
+        </div>
+
+        <div className="border-t lg:border-t-0 lg:border-l border-dashed border-gray-200 pt-6 lg:pt-0 lg:pl-8">
+          <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">Sessions (7d)</p>
           <p className="text-base font-medium text-gray-900">Week-on-week trend</p>
-          <SeoSparkline values={snapshot.sessionTrend} />
+          <SeoSparkline values={snapshot.sessionTrend} color={healthColor} />
         </div>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5 text-base">
@@ -2034,52 +2688,106 @@ const SeoChannelMix: React.FC<{ channels: typeof mockSeoSnapshots.channels }> = 
   </div>
 );
 
-const SeoKeywordsTable: React.FC<{ keywords: typeof mockSeoKeywordsDetailed }> = ({ keywords }) => (
-  <div className="rounded-3xl border-2 border-[#0066ff]/20 bg-white p-5 shadow-md">
-    <div className="flex items-center justify-between mb-4">
-      <div>
-        <p className="text-sm font-semibold text-gray-900">Top Organic Keywords (07)</p>
-        <p className="text-xs text-gray-500">Most impactful search queries</p>
+const SeoKeywordsTable: React.FC<{ keywords: typeof mockSeoKeywordsDetailed; downloadFileName?: string }> = ({
+  keywords,
+  downloadFileName = 'top-organic-keywords.csv',
+}) => {
+
+  const getVolumeColor = (val: number) => {
+    if (val <= 20) return { bg: '#fee2e2', text: '#ef4444' }; // Red
+    if (val <= 40) return { bg: '#ffedd5', text: '#f97316' }; // Orange
+    if (val <= 60) return { bg: '#fef9c3', text: '#eab308' }; // Yellow
+    if (val <= 80) return { bg: '#dcfce7', text: '#84cc16' }; // Lime
+    return { bg: '#dcfce7', text: '#22c55e' }; // Green (using same bg as lime for consistency or distinct if needed)
+  };
+
+  const handleDownload = () => {
+    const rows = Array.isArray(keywords) ? keywords : [];
+    const header = ['Keyword', 'Position', 'Volume', 'CPU(USD)', 'Traffic(%)'];
+    const escape = (value: unknown) => {
+      const text = String(value ?? '');
+      const escaped = text.replace(/"/g, '""');
+      return `"${escaped}"`;
+    };
+
+    const csvLines = [
+      header.map(escape).join(','),
+      ...rows.map((row: any) => [
+        escape(row.keyword),
+        escape(row.pos),
+        escape(row.volume),
+        escape(row.cpu),
+        escape(row.traffic),
+      ].join(',')),
+    ];
+
+    const csv = `\ufeff${csvLines.join('\n')}`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = downloadFileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[18px] font-semibold text-gray-900">Top Organic Keywords</p>
+        <button
+          className="inline-flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-md transition-all download-pill hover:bg-white/5"
+          style={{ color: 'var(--theme-text)', border: '1px solid rgba(255,255,255,0.1)', backgroundColor: 'transparent' }}
+          title="Download"
+          onClick={handleDownload}
+        >
+          <Download className="h-3.5 w-3.5" />
+          Download
+        </button>
       </div>
-      <button className="px-3 py-1 rounded-full border border-blue-100 text-xs font-medium text-blue-600">View All</button>
-    </div>
-    <div className="overflow-x-auto">
-      <table className="min-w-full text-sm">
-        <thead>
-          <tr className="text-left text-xs uppercase  text-gray-500">
-            <th className="py-2 pr-4">Keywords</th>
-            <th className="py-2 pr-4">Pos.</th>
-            <th className="py-2 pr-4">Volume</th>
-            <th className="py-2 pr-4">CPUT(THB)</th>
-            <th className="py-2">Traffic %</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100">
-          {keywords.map((row, index) => (
-            <tr key={`${row.keyword}-${index}`} className="text-gray-800">
-              <td className="py-3 pr-4 font-semibold text-blue-600">{row.keyword}</td>
-              <td className="py-3 pr-4">{row.pos}</td>
-              <td className="py-3 pr-4">
-                <span className="inline-flex items-center px-2 py-1 rounded-md bg-yellow-100 text-yellow-700 text-xs font-semibold">
-                  {row.volume}
-                </span>
-              </td>
-              <td className="py-3 pr-4">{row.cpu.toLocaleString('en-US')}</td>
-              <td className="py-3">{row.traffic}%</td>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
+              <th className="pb-3 pr-4 font-medium">Keywords</th>
+              <th className="pb-3 pr-4 font-medium text-center">pos.</th>
+              <th className="pb-3 pr-4 font-medium text-center">Volume</th>
+              <th className="pb-3 pr-4 font-medium text-center">CPU(USD)</th>
+              <th className="pb-3 font-medium text-center">Traffic,%</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {(Array.isArray(keywords) ? keywords : []).map((row: any, index: number) => {
+              const color = getVolumeColor(row.volume);
+              return (
+                <tr key={`${row.keyword}-${index}`} className="group hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
+                  <td className="py-3 pr-4 font-medium text-blue-500">{row.keyword}</td>
+                  <td className="py-3 pr-4 text-gray-700 text-center">{row.pos}</td>
+                  <td className="py-3 pr-4 text-center">
+                    <span
+                      className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold"
+                      style={{ backgroundColor: color.bg, color: color.text }}
+                    >
+                      {row.volume}
+                    </span>
+                  </td>
+                  <td className="py-3 pr-4 text-gray-700 text-center">{row.cpu}</td>
+                  <td className="py-3 text-center text-gray-700">{row.traffic}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const SeoCompetitorsCard: React.FC<{ competitors: typeof mockSeoCompetitors }> = ({ competitors }) => (
   <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-    <div className="flex items-center justify-between">
-      <p className="text-sm font-semibold text-gray-900">Top organic Competitors</p>
-      <button className="px-3 py-1 rounded-full border border-gray-200 text-xs">View All</button>
-    </div>
+    <p className="text-sm font-semibold text-gray-900">Top organic Competitors</p>
     <div className="space-y-3 text-sm">
       {competitors.map((competitor) => (
         <div key={competitor.name} className="flex items-center justify-between">
@@ -2148,7 +2856,7 @@ const SeoBacklinkSummaryCard: React.FC = () => (
 );
 
 const SeoRightRailCard: React.FC = () => (
-  <div className="rounded-3xl border border-blue-100 bg-blue-50/30 p-5 space-y-4">
+  <div className="theme-card rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
     <p className="text-sm font-semibold text-gray-900">Crawled metrics</p>
     <div className="space-y-2 text-sm">
       {mockSeoRightRailStats.map((stat) => (
@@ -2197,25 +2905,59 @@ const SeoRegionalPerformanceCard: React.FC = () => (
   </div>
 );
 
-const SeoAuthorityCard: React.FC = () => (
-  <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
-    <p className="text-sm font-semibold text-gray-900">Authority metrics</p>
-    <div className="grid grid-cols-2 gap-4">
-      {mockSeoAuthorityScores.map((score) => (
-        <div key={score.label} className="rounded-2xl border border-gray-100 p-3">
-          <p className="text-xs uppercase  text-gray-500">{score.label}</p>
-          <div className="flex items-center gap-3">
-            <span className="text-3xl font-semibold text-gray-900">{score.value}</span>
-            <div className="flex-1 h-2 rounded-full bg-gray-100">
-              <div className="h-full rounded-full bg-gradient-to-r from-green-400 to-lime-500" style={{ width: `${score.value}%` }} />
+const SeoAuthorityCard: React.FC = () => {
+  const getScoreColor = (label: string) => {
+    if (label.includes('UR') || label.includes('Rating')) return '#22c55e'; // Green
+    return '#f59e0b'; // Orange for DR/others
+  };
+
+  return (
+    <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-gray-900">Authority metrics</p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {mockSeoAuthorityScores.map((score) => (
+          <div key={score.label} className="relative overflow-hidden rounded-2xl bg-[#0f172a] p-5 shadow-sm flex flex-col items-center justify-center text-center group transition-transform hover:scale-[1.01]">
+            <div className="absolute top-4 left-4">
+              <p className="text-sm font-bold text-white">{score.label}</p>
             </div>
+
+            <div className="relative h-44 w-full mt-2">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={[{ value: score.value }, { value: 100 - score.value }]}
+                    cx="50%"
+                    cy="75%"
+                    startAngle={180}
+                    endAngle={0}
+                    innerRadius={80}
+                    outerRadius={100}
+                    paddingAngle={0}
+                    dataKey="value"
+                    stroke="none"
+                    isAnimationActive={true}
+                  >
+                    <Cell fill={getScoreColor(score.label)} />
+                    <Cell fill="#334155" />
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute bottom-5 left-0 right-0 flex justify-center">
+                <div className={`px-4 py-1.5 rounded-xl bg-white/10 backdrop-blur-sm border border-white/5`}>
+                  <span className="text-2xl font-bold text-white">{score.value}</span>
+                </div>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-400 mt-[-20px] pb-2">{score.helper}</p>
           </div>
-          <p className="text-xs text-gray-500">{score.helper}</p>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const SeoOrganicSummaryCard: React.FC = () => (
   <div className="rounded-3xl border border-gray-100 bg-white p-5 space-y-3">
@@ -2350,7 +3092,8 @@ const AgeRangeDonut: React.FC<{ ranges: CampaignSource['ageRange'] }> = ({ range
             <RechartsTooltip
               formatter={(value: number, _name: string, payload) => {
                 const percent = typeof value === 'number' ? value.toFixed(1) + '%' : value;
-                return [percent, (payload?.payload as any)?.name];
+                const rowName = (payload as { payload?: { name?: string } } | undefined)?.payload?.name;
+                return [percent, rowName];
               }}
             />
           </PieChart>
@@ -2386,9 +3129,8 @@ const ConversionRateBars: React.FC<{ data: CampaignSource['conversionRate'] }> =
             <button
               key={item.label}
               onClick={() => setActiveLabel(item.label)}
-              className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
-                isActive ? 'bg-gray-900 text-white border-gray-900 shadow-lg' : 'border-gray-200 text-gray-700 hover:border-gray-400'
-              }`}
+              className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${isActive ? 'bg-gray-900 text-white border-gray-900 shadow-lg' : 'border-gray-200 text-gray-700 hover:border-gray-400'
+                }`}
             >
               {item.label}
             </button>
@@ -2467,26 +3209,311 @@ const GenderDistributionChart: React.FC<{ data: CampaignSource['genderDistributi
 
 const CampaignSourceTabs: React.FC<{
   sources: CampaignSource[];
-  themeMode: 'light' | 'dark' | 'canvas';
+  themeMode: 'light' | 'dark';
   onDownload?: (section: string) => void;
+  themePanelClass: string;
+  RealTimeCard: React.ComponentType<any>;
+  realtimeModeEnabled: boolean;
   visualizationRef?: React.RefObject<HTMLDivElement>;
-}> = ({ sources, themeMode, onDownload, visualizationRef }) => {
+}> = ({ sources, themeMode, onDownload, themePanelClass, RealTimeCard, realtimeModeEnabled, visualizationRef }) => {
   const [activeSourceId, setActiveSourceId] = useState(sources[0]?.id || '');
   const [chartTheme, setChartTheme] = useState<'sunset' | 'carbon'>('sunset');
   const [selectedCampaignIds, setSelectedCampaignIds] = useState<string[]>([]);
   const [campaignQuery, setCampaignQuery] = useState('');
   const [campaignStatusFilter, setCampaignStatusFilter] = useState<'all' | 'active' | 'paused' | 'ended'>('all');
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
+  const campaignColumnsStorageKey = 'dashboard.campaignTable.visibleColumns';
+  const campaignColumnsOrderStorageKey = 'dashboard.campaignTable.columnOrder';
+
+  const [campaignNameTooltip, setCampaignNameTooltip] = useState<null | { name: string; left: number; top: number }>(null);
+
+  const showCampaignNameTooltip = useCallback((event: React.MouseEvent<HTMLElement>, name: string) => {
+    const el = event.currentTarget as HTMLElement | null;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const maxWidth = 520;
+    const left = Math.min(Math.max(12, rect.left), Math.max(12, window.innerWidth - maxWidth - 12));
+    const top = Math.max(12, rect.top - 10);
+    setCampaignNameTooltip({ name, left, top });
+  }, []);
+
+  const hideCampaignNameTooltip = useCallback(() => {
+    setCampaignNameTooltip(null);
+  }, []);
+
+  useEffect(() => {
+    if (!sources.length) {
+      setActiveSourceId('');
+      return;
+    }
+    if (!sources.find((source) => source.id === activeSourceId)) {
+      setActiveSourceId(sources[0].id);
+    }
+  }, [sources, activeSourceId]);
+  const campaignColumnDefs = useMemo(
+    () => [
+      { key: 'budget', label: 'Budget' },
+      { key: 'spent', label: 'Spent' },
+      { key: 'conversions', label: 'Conversions' },
+      { key: 'roi', label: 'ROI' },
+      { key: 'roas', label: 'ROAS' },
+      { key: 'impressions', label: 'Impressions' },
+      { key: 'clicks', label: 'Clicks' },
+      { key: 'ctr', label: 'CTR' },
+      { key: 'cpc', label: 'CPC' },
+      { key: 'cpm', label: 'CPM' },
+    ],
+    []
+  );
+
+  const [visibleCampaignColumns, setVisibleCampaignColumns] = useState<Record<string, boolean>>(() => ({
+    ...(typeof window !== 'undefined'
+      ? (() => {
+        try {
+          const raw = window.localStorage.getItem(campaignColumnsStorageKey);
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== 'object') return null;
+          return parsed as Record<string, boolean>;
+        } catch {
+          return null;
+        }
+      })()
+      : null),
+    budget: true,
+    spent: true,
+    conversions: true,
+    roi: true,
+    roas: false,
+    impressions: false,
+    clicks: false,
+    ctr: false,
+    cpc: false,
+    cpm: false,
+  }));
+
+  const [campaignColumnOrder, setCampaignColumnOrder] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem(campaignColumnsOrderStorageKey);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      const allowed = new Set(campaignColumnDefs.map((col) => col.key));
+      const cleaned = parsed.filter((key) => typeof key === 'string' && allowed.has(key));
+      return cleaned;
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(campaignColumnsStorageKey, JSON.stringify(visibleCampaignColumns));
+    } catch {
+      // Ignore storage errors (e.g. private mode)
+    }
+  }, [campaignColumnsStorageKey, visibleCampaignColumns]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(campaignColumnsOrderStorageKey, JSON.stringify(campaignColumnOrder));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [campaignColumnsOrderStorageKey, campaignColumnOrder]);
+
+  const toggleCampaignColumn = useCallback((key: string) => {
+    setVisibleCampaignColumns((prev) => {
+      const isCurrentlyVisible = prev[key] !== false;
+      const nextValue = !isCurrentlyVisible;
+
+      setCampaignColumnOrder((orderPrev) => {
+        if (nextValue) {
+          if (orderPrev.includes(key)) return orderPrev;
+          return [...orderPrev, key];
+        }
+        return orderPrev.filter((k) => k !== key);
+      });
+
+      return { ...prev, [key]: nextValue };
+    });
+  }, []);
+
+  const displayedCampaignColumns = useMemo(() => {
+    const allKeys = campaignColumnDefs.map((col) => col.key);
+    const selectedKeysDefaultOrder = allKeys.filter((key) => visibleCampaignColumns[key] !== false);
+    const selectedKeysByOrder = campaignColumnOrder.filter((key) => visibleCampaignColumns[key] !== false);
+    const selectedKeys = selectedKeysByOrder.length
+      ? [...selectedKeysByOrder, ...selectedKeysDefaultOrder.filter((key) => !selectedKeysByOrder.includes(key))]
+      : selectedKeysDefaultOrder;
+
+    const unselectedKeys = allKeys.filter((key) => visibleCampaignColumns[key] === false);
+    return [...selectedKeys, ...unselectedKeys];
+  }, [campaignColumnDefs, campaignColumnOrder, visibleCampaignColumns]);
+
+  const campaignColumnMeta = useMemo(() => {
+    const map: Record<string, { label: string; minWidthClass: string }> = {
+      budget: { label: 'Budget', minWidthClass: 'min-w-[140px]' },
+      spent: { label: 'Spent', minWidthClass: 'min-w-[140px]' },
+      conversions: { label: 'Conversions', minWidthClass: 'min-w-[140px]' },
+      roi: { label: 'ROI', minWidthClass: 'min-w-[120px]' },
+      roas: { label: 'ROAS', minWidthClass: 'min-w-[120px]' },
+      impressions: { label: 'Impressions', minWidthClass: 'min-w-[150px]' },
+      clicks: { label: 'Clicks', minWidthClass: 'min-w-[120px]' },
+      ctr: { label: 'CTR', minWidthClass: 'min-w-[110px]' },
+      cpc: { label: 'CPC', minWidthClass: 'min-w-[110px]' },
+      cpm: { label: 'CPM', minWidthClass: 'min-w-[110px]' },
+    };
+    return map;
+  }, []);
+  const campaignTableScrollRef = useRef<HTMLDivElement | null>(null);
+  const campaignTableBottomScrollRef = useRef<HTMLDivElement | null>(null);
+  const isSyncingCampaignTableScroll = useRef<'main' | 'bottom' | null>(null);
+  const [campaignTableScrollWidth, setCampaignTableScrollWidth] = useState(0);
   const detailedAdPerformanceScrollRef = useRef<HTMLDivElement | null>(null);
   const [canScrollDetailedLeft, setCanScrollDetailedLeft] = useState(false);
   const [canScrollDetailedRight, setCanScrollDetailedRight] = useState(false);
+
+  const [comparedCampaignColumns, setComparedCampaignColumns] = useState<string[]>([]);
+  const draggingCampaignColumnKeyRef = useRef<string | null>(null);
 
   const activeSource = useMemo(() => {
     if (!sources.length) return null;
     return sources.find((source) => source.id === activeSourceId) || sources[0];
   }, [sources, activeSourceId]);
 
+  const activeSourceRealtimeCards = useMemo(() => {
+    if (!activeSource?.summary?.length) return [];
+    const normalize = (value: unknown) =>
+      String(value ?? '')
+        .toLowerCase()
+        .replace(/\./g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const preferredLabels = ['Total Campaigns', 'Total SpendRate', 'Total Conversions', 'Avg. ROI'].map(normalize);
+    const labelAliases: Record<string, string[]> = {
+      [normalize('Total Campaigns')]: [normalize('Campaigns')],
+      [normalize('Total SpendRate')]: [normalize('Total Spend Rate'), normalize('Spend Rate'), normalize('SpendRate'), normalize('Spend')],
+      [normalize('Total Conversions')]: [normalize('Conversions')],
+      [normalize('Avg. ROI')]: [normalize('Avg ROI'), normalize('Average ROI')],
+    };
+
+    const asSummaryItem = (value: unknown): RealtimeSummaryItem | null => {
+      if (!isRecord(value)) return null;
+      const label = typeof value.label === 'string' ? value.label : '';
+      if (!label.trim()) return null;
+      return {
+        id: typeof value.id === 'string' || typeof value.id === 'number' ? value.id : undefined,
+        label,
+        value: typeof value.value === 'string' || typeof value.value === 'number' ? value.value : '',
+        delta: typeof value.delta === 'string' || typeof value.delta === 'number' ? value.delta : '',
+        positive: typeof value.positive === 'boolean' ? value.positive : undefined,
+      };
+    };
+
+    const byLabel = new Map<string, RealtimeSummaryItem>();
+    const byId = new Map<string, RealtimeSummaryItem>();
+    activeSource.summary.forEach((item: unknown) => {
+      const summaryItem = asSummaryItem(item);
+      if (!summaryItem) return;
+      const idKey = String(summaryItem.id ?? '').trim();
+      const labelKey = normalize(summaryItem.label);
+      if (idKey && !byId.has(idKey)) {
+        byId.set(idKey, summaryItem);
+      }
+      if (labelKey && !byLabel.has(labelKey)) {
+        byLabel.set(labelKey, summaryItem);
+      }
+    });
+
+    const picked: RealtimeSummaryItem[] = [];
+    const seen = new Set<string>();
+
+    preferredLabels.forEach((labelKey) => {
+      const candidates = [labelKey, ...(labelAliases[labelKey] ?? [])];
+      const foundKey = candidates.find((candidate) => byLabel.has(candidate));
+      const item = foundKey ? byLabel.get(foundKey) : undefined;
+      if (!item) return;
+      const idKey = String(item.id ?? '').trim();
+      const uniqueKey = idKey ? `id:${idKey}` : `label:${normalize(item.label)}`;
+      if (seen.has(uniqueKey)) return;
+      seen.add(uniqueKey);
+      picked.push(item);
+      if (idKey) {
+        byId.delete(idKey);
+      }
+      if (foundKey) {
+        byLabel.delete(foundKey);
+      }
+    });
+
+    Array.from(byId.values()).some((item) => {
+      if (picked.length >= 4) return true;
+      const idKey = String(item.id ?? '').trim();
+      const uniqueKey = idKey ? `id:${idKey}` : `label:${normalize(item.label)}`;
+      if (!uniqueKey || seen.has(uniqueKey)) return false;
+      seen.add(uniqueKey);
+      picked.push(item);
+      return false;
+    });
+
+    return picked.slice(0, 4);
+  }, [activeSource]);
+
   const hasSelectedCampaigns = selectedCampaignIds.length > 0;
+
+  const toggleComparedCampaignColumn = useCallback((key: string) => {
+    setComparedCampaignColumns((prev) => {
+      const isCurrentlyCompared = prev.includes(key);
+      const nextCompared = isCurrentlyCompared
+        ? prev.filter((k) => k !== key)
+        : prev.length >= 3
+          ? [...prev.slice(1), key]
+          : [...prev, key];
+
+      setCampaignColumnOrder((orderPrev) => {
+        const allowed = new Set(campaignColumnDefs.map((col) => col.key));
+        const base = orderPrev.length ? orderPrev.filter((k) => allowed.has(k)) : campaignColumnDefs.map((col) => col.key);
+        const baseVisible = base.filter((k) => visibleCampaignColumns[k] !== false);
+
+        const prioritized = nextCompared.filter((k) => baseVisible.includes(k));
+        const rest = baseVisible.filter((k) => !prioritized.includes(k));
+        return [...prioritized, ...rest];
+      });
+
+      return nextCompared;
+    });
+  }, [campaignColumnDefs, visibleCampaignColumns]);
+
+  const moveCampaignColumn = useCallback(
+    (fromKey: string, toKey: string) => {
+      if (!fromKey || !toKey || fromKey === toKey) return;
+      const visibleKeys = displayedCampaignColumns.filter((key) => visibleCampaignColumns[key] !== false);
+      if (!visibleKeys.includes(fromKey) || !visibleKeys.includes(toKey)) return;
+
+      const nextVisible = [...visibleKeys];
+      const fromIndex = nextVisible.indexOf(fromKey);
+      const toIndex = nextVisible.indexOf(toKey);
+      if (fromIndex < 0 || toIndex < 0) return;
+      nextVisible.splice(fromIndex, 1);
+      nextVisible.splice(toIndex, 0, fromKey);
+
+      setCampaignColumnOrder((prevOrder) => {
+        const allowed = new Set(campaignColumnDefs.map((col) => col.key));
+        const current = prevOrder.filter((key) => allowed.has(key));
+        const base = current.length ? current : visibleKeys;
+        const baseSet = new Set(base);
+        const next = nextVisible.filter((key) => baseSet.has(key));
+        const rest = base.filter((key) => !next.includes(key));
+        return [...next, ...rest];
+      });
+    },
+    [campaignColumnDefs, displayedCampaignColumns, visibleCampaignColumns]
+  );
 
   useEffect(() => {
     setSelectedCampaignIds([]);
@@ -2532,27 +3559,27 @@ const CampaignSourceTabs: React.FC<{
     const accent = activeSource?.accent || '#f97316';
     return chartTheme === 'sunset'
       ? {
-          primary: accent,
-          secondary: '#fef08a',
-          tertiary: '#fb923c',
-          card: 'from-white to-orange-50/40',
-          border: 'border-orange-100',
-          text: 'text-gray-900',
-          subtext: 'text-gray-600',
-          legend: '#0f172a',
-          area: 'rgba(249, 115, 22, 0.18)',
-        }
+        primary: accent,
+        secondary: '#fef08a',
+        tertiary: '#fb923c',
+        card: 'from-white to-orange-50/40',
+        border: 'border-orange-100',
+        text: 'text-gray-900',
+        subtext: 'text-gray-600',
+        legend: '#0f172a',
+        area: 'rgba(249, 115, 22, 0.18)',
+      }
       : {
-          primary: '#0f172a',
-          secondary: '#475569',
-          tertiary: '#f97316',
-          card: 'from-gray-900 via-gray-800 to-gray-900',
-          border: 'border-gray-800',
-          text: 'text-white',
-          subtext: 'text-gray-300',
-          legend: '#e5e7eb',
-          area: 'rgba(15, 23, 42, 0.35)',
-        };
+        primary: '#0f172a',
+        secondary: '#475569',
+        tertiary: '#f97316',
+        card: 'from-gray-900 via-gray-800 to-gray-900',
+        border: 'border-gray-800',
+        text: 'text-white',
+        subtext: 'text-gray-300',
+        legend: '#e5e7eb',
+        area: 'rgba(15, 23, 42, 0.35)',
+      };
   }, [activeSource, chartTheme]);
 
   const selectedCampaigns = useMemo(() => {
@@ -2572,6 +3599,146 @@ const CampaignSourceTabs: React.FC<{
       return matchesQuery && matchesStatus && matchesSelected;
     });
   }, [activeSource, campaignQuery, campaignStatusFilter, showSelectedOnly, selectedCampaignIds]);
+
+  useEffect(() => {
+    const updateWidth = () => {
+      const el = campaignTableScrollRef.current;
+      if (!el) return;
+      setCampaignTableScrollWidth(el.scrollWidth);
+    };
+
+    updateWidth();
+    const raf = window.requestAnimationFrame(updateWidth);
+    window.addEventListener('resize', updateWidth);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener('resize', updateWidth);
+    };
+  }, [displayedCampaignColumns, filteredCampaigns.length]);
+
+  const handleCampaignTableScroll = useCallback(() => {
+    const main = campaignTableScrollRef.current;
+    const bottom = campaignTableBottomScrollRef.current;
+    if (!main || !bottom) return;
+    if (isSyncingCampaignTableScroll.current === 'bottom') {
+      isSyncingCampaignTableScroll.current = null;
+      return;
+    }
+    isSyncingCampaignTableScroll.current = 'main';
+    bottom.scrollLeft = main.scrollLeft;
+    isSyncingCampaignTableScroll.current = null;
+  }, []);
+
+  const handleCampaignTableBottomScroll = useCallback(() => {
+    const main = campaignTableScrollRef.current;
+    const bottom = campaignTableBottomScrollRef.current;
+    if (!main || !bottom) return;
+    if (isSyncingCampaignTableScroll.current === 'main') {
+      isSyncingCampaignTableScroll.current = null;
+      return;
+    }
+    isSyncingCampaignTableScroll.current = 'bottom';
+    main.scrollLeft = bottom.scrollLeft;
+    isSyncingCampaignTableScroll.current = null;
+  }, []);
+
+  const summaryCampaigns = useMemo(() => {
+    if (!activeSource) return [];
+    return (activeSource.campaigns || []).filter(
+      (campaign) => (campaign.status || '').toLowerCase() === 'active'
+    );
+  }, [activeSource]);
+
+  const summarySubtitle = useMemo(() => {
+    if (summaryCampaigns.length === 0) {
+      return 'No active campaigns within this source';
+    }
+    return `Summary based on ${summaryCampaigns.length} active campaign${summaryCampaigns.length === 1 ? '' : 's'} within this source`;
+  }, [summaryCampaigns.length]);
+
+  const performanceSummary = useMemo(() => {
+    if (!activeSource) {
+      return {
+        spent: 0,
+        impressions: 0,
+        clicks: 0,
+        ctr: 0,
+        cpc: 0,
+        cpm: 0,
+      };
+    }
+
+    const nameSet = new Set(summaryCampaigns.map((campaign) => campaign.name));
+    const rows = activeSource.adPerformance.filter((row) => nameSet.has(row.campaign));
+
+    const totals = rows.reduce(
+      (acc, row) => {
+        acc.spent += row.spend;
+        acc.impressions += row.impressions;
+        acc.clicks += row.clicks;
+        return acc;
+      },
+      { spent: 0, impressions: 0, clicks: 0 }
+    );
+
+    const ctr = totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : 0;
+    const cpc = totals.clicks > 0 ? totals.spent / totals.clicks : 0;
+    const cpm = totals.impressions > 0 ? (totals.spent / totals.impressions) * 1000 : 0;
+
+    return {
+      spent: totals.spent,
+      impressions: totals.impressions,
+      clicks: totals.clicks,
+      ctr,
+      cpc,
+      cpm,
+    };
+  }, [activeSource, summaryCampaigns]);
+
+  const campaignSummary = useMemo(() => {
+    const totalBudget = summaryCampaigns.reduce((sum, campaign) => sum + campaign.budget, 0);
+    const totalSpent = summaryCampaigns.reduce((sum, campaign) => sum + campaign.spent, 0);
+    const totalConversions = summaryCampaigns.reduce((sum, campaign) => sum + campaign.conversions, 0);
+    const avgRoi = summaryCampaigns.length
+      ? summaryCampaigns.reduce((sum, campaign) => sum + campaign.roi, 0) / summaryCampaigns.length
+      : 0;
+    const spendRate = totalBudget > 0 ? totalSpent / totalBudget : 0;
+    const costPerConversion = totalConversions > 0 ? totalSpent / totalConversions : 0;
+
+    const statuses = summaryCampaigns.reduce(
+      (acc, campaign) => {
+        const status = (campaign.status || '').toLowerCase();
+        if (status === 'active') acc.active += 1;
+        else if (status === 'paused') acc.paused += 1;
+        else if (status === 'ended') acc.ended += 1;
+        else acc.other += 1;
+        return acc;
+      },
+      { active: 0, paused: 0, ended: 0, other: 0 }
+    );
+
+    const topRoiCampaign = summaryCampaigns.length
+      ? summaryCampaigns.reduce((best, current) => (current.roi > best.roi ? current : best), summaryCampaigns[0])
+      : null;
+    const topConversionsCampaign = summaryCampaigns.length
+      ? summaryCampaigns.reduce(
+        (best, current) => (current.conversions > best.conversions ? current : best),
+        summaryCampaigns[0]
+      )
+      : null;
+
+    return {
+      totalBudget,
+      totalSpent,
+      totalConversions,
+      avgRoi,
+      spendRate,
+      costPerConversion,
+      statuses,
+      topRoiCampaign,
+      topConversionsCampaign,
+    };
+  }, [summaryCampaigns]);
 
   const budgetVsSpendData = useMemo(() => {
     if (!activeSource || !hasSelectedCampaigns) return [];
@@ -2688,7 +3855,9 @@ const CampaignSourceTabs: React.FC<{
     link.setAttribute('download', filename);
     document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
+    if (link.parentNode) {
+      link.parentNode.removeChild(link);
+    }
     URL.revokeObjectURL(url);
   }, []);
 
@@ -2696,14 +3865,16 @@ const CampaignSourceTabs: React.FC<{
     if (!activeSource) return;
     const rows: (string | number)[][] = [];
 
-    if (activeSource.summary?.length) {
+    const filteredCards = activeSourceRealtimeCards.slice(0, 4);
+
+    if (filteredCards.length) {
       rows.push(['Real-Time Analytics']);
       rows.push(['Metric', 'Value', 'Delta', 'Trend']);
-      activeSource.summary.forEach((stat) => {
+      filteredCards.forEach((stat) => {
         rows.push([
           stat.label,
           stat.value,
-          stat.delta ?? '',
+          stat.delta,
           stat.positive ? 'Positive' : 'Negative',
         ]);
       });
@@ -2730,7 +3901,7 @@ const CampaignSourceTabs: React.FC<{
 
     if (!rows.length) return;
     exportToCsv('campaign-performance-analytics.csv', rows);
-  }, [activeSource, exportToCsv]);
+  }, [activeSource, activeSourceRealtimeCards, exportToCsv]);
 
   const handleDetailedAdPerformanceDownload = useCallback(() => {
     if (!activeSource?.adPerformance?.length) return;
@@ -2751,13 +3922,13 @@ const CampaignSourceTabs: React.FC<{
     exportToCsv('detailed-ad-performance.csv', rows);
   }, [activeSource, exportToCsv]);
 
-  const statusClasses = (status: string) => {
+  const statusBadgeStyle = (status: string) => {
     const normalized = status.toLowerCase();
-    if (normalized === 'active') return 'bg-emerald-100 text-emerald-700';
-    if (normalized === 'paused') return 'bg-gray-200 text-gray-700';
-    if (normalized === 'ended') return 'bg-rose-100 text-rose-700';
-    if (normalized === 'learning') return 'bg-gray-200 text-gray-700';
-    return 'bg-gray-100 text-gray-600';
+    if (normalized === 'active') return { backgroundColor: '#10b981', borderColor: '#059669', color: '#ffffff' };
+    if (normalized === 'paused') return { backgroundColor: '#64748b', borderColor: '#475569', color: '#ffffff' };
+    if (normalized === 'ended') return { backgroundColor: '#ef4444', borderColor: '#dc2626', color: '#ffffff' };
+    if (normalized === 'learning') return { backgroundColor: '#6b7280', borderColor: '#4b5563', color: '#ffffff' };
+    return { backgroundColor: '#64748b', borderColor: '#475569', color: '#ffffff' };
   };
 
   if (!activeSource) {
@@ -2768,39 +3939,63 @@ const CampaignSourceTabs: React.FC<{
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {sources.map((source) => {
           const isActive = source.id === currentSourceId;
+          const isTikTok = source.id === 'tiktok';
           const activeStyle = isActive
             ? {
-                background: accentGradient(source.accent, 0.25, 0.85),
-                borderColor: 'transparent',
-                color: '#fff',
-                boxShadow: `0 18px 35px ${hexToRgba(source.accent, 0.35)}`,
-              }
+              background: `linear-gradient(135deg, ${hexToRgba(source.accent, 0.35)}, ${hexToRgba(source.accent, 0.14)})`,
+              borderColor: hexToRgba(source.accent, 0.18),
+              boxShadow: `0 14px 30px ${hexToRgba(source.accent, 0.18)}`,
+            }
             : undefined;
+
+          const categoryLabel = /analytics/i.test(source.label || '') ? 'ANALYTICS' : 'ADS';
           return (
             <button
               key={source.id}
               onClick={() => setActiveSourceId(source.id)}
               aria-pressed={isActive}
-              className={`flex items-center gap-4 rounded-2xl border px-5 py-4 transition ${
-                isActive
-                  ? 'text-white'
-                  : 'bg-white text-gray-800 border-gray-200 hover:border-gray-400 shadow-sm'
-              }`}
-              style={activeStyle}
-            >
-              <div
-                className={`h-12 w-12 rounded-2xl flex items-center justify-center ${
-                  isActive ? 'bg-white/20 backdrop-blur border border-white/30' : 'bg-white'
+              type="button"
+              className={`w-full rounded-2xl px-5 py-4 text-left transition-all duration-200 theme-card hover:shadow-sm hover:-translate-y-0.5 ${isActive ? 'border-0' : ''
                 }`}
-              >
-                <img src={source.logo} alt={source.label} className="h-7 w-7 object-contain" />
-              </div>
-              <div className="text-left">
-                <p className={`text-[15px] uppercase  ${isActive ? 'text-white/80' : 'theme-muted'}`}>Ads</p>
-                <p className={`text-base font-semibold ${isActive ? '' : 'theme-muted'}`}>{source.label}</p>
+              style={
+                isActive
+                  ? {
+                    ...activeStyle,
+                    borderColor: 'transparent',
+                  }
+                  : undefined
+              }
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-4 min-w-0">
+                  <div
+                    className="h-12 w-12 rounded-full flex items-center justify-center shrink-0 border"
+                    style={
+                      isActive
+                        ? {
+                          backgroundColor: isTikTok ? '#111827' : 'rgba(255,255,255,0.70)',
+                          borderColor: isTikTok ? '#111827' : 'rgba(255,255,255,0.65)',
+                        }
+                        : {
+                          backgroundColor: isTikTok ? '#111827' : 'rgba(0,0,0,0.02)',
+                          borderColor: isTikTok ? '#111827' : 'var(--theme-border)',
+                        }
+                    }
+                  >
+                    <img src={source.logo} alt={source.label} className="h-7 w-7 object-contain" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide theme-muted">{categoryLabel}</p>
+                    <p className="mt-1 text-sm font-semibold leading-tight truncate theme-text">{source.label}</p>
+                  </div>
+                </div>
+                <span
+                  className="mt-1 h-2.5 w-2.5 rounded-full"
+                  style={{ backgroundColor: isActive ? '#22c55e' : '#e5e7eb' }}
+                />
               </div>
             </button>
           );
@@ -2813,25 +4008,25 @@ const CampaignSourceTabs: React.FC<{
             <p className="text-[20px] font-bold text-gray-900">Real-Time Analytics</p>
             <p className="text-base text-gray-500">Updated on mock data • swap with live API anytime</p>
           </div>
-          <button
-            className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-            onClick={handleCampaignAnalyticsDownload}
-            title="Download analytics & ad performance data"
-          >
-            <Download className="h-4 w-4" />
-            Download
-          </button>
+
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-          {activeSource.summary.map((stat) => (
-            <RealTimeCard key={stat.id} label={stat.label} value={stat.value} delta={stat.delta} positive={stat.positive} />
+          {activeSourceRealtimeCards.slice(0, 4).map((stat) => (
+            <RealTimeCard
+              key={`${stat.id ?? 'metric'}-${stat.label ?? ''}`}
+              label={stat.label}
+              value={stat.value}
+              delta={stat.delta}
+              positive={stat.positive}
+              realtimeModeEnabled={realtimeModeEnabled}
+            />
           ))}
         </div>
 
         <div className="flex flex-col gap-3">
           <div
             className="rounded-2xl p-4 border shadow-sm"
-            style={{ backgroundColor: 'var(--surface-muted)', borderColor: 'var(--theme-border)', boxShadow: 'var(--theme-card-shadow)' }}
+            style={{ backgroundColor: 'var(--theme-surface)', borderColor: 'var(--theme-border)', boxShadow: 'var(--theme-card-shadow)' }}
           >
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div className="flex items-center justify-between gap-3">
@@ -2888,73 +4083,285 @@ const CampaignSourceTabs: React.FC<{
                 Selected only
               </label>
             </div>
-          </div>
 
-          <div className="overflow-x-auto overflow-y-auto max-h-[360px]">
-          <table className="min-w-full text-base">
-            <thead>
-              <tr className="text-left text-[15px] uppercase  text-gray-500">
-                <th className="py-3 pr-6">Campaign</th>
-                <th className="py-3 pr-6">Date</th>
-                <th className="py-3 pr-6">Status</th>
-                <th className="py-3 pr-6">Budget</th>
-                <th className="py-3 pr-6">Spent</th>
-                <th className="py-3 pr-6">Conversions</th>
-                <th className="py-3 pr-6">ROI</th>
-                <th className="py-3">Show</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {filteredCampaigns.map((campaign) => {
-                const isSelected = selectedCampaignIds.includes(campaign.id);
-                const isDark = themeMode === 'dark';
+            <div className="mt-3 flex flex-wrap gap-2">
+              {campaignColumnDefs.map((col) => {
+                const checked = visibleCampaignColumns[col.key] !== false;
                 return (
-                <tr key={campaign.id} className="text-gray-800">
-                  <td className="py-4 pr-6 font-semibold text-gray-900">{campaign.name}</td>
-                  <td className="py-4 pr-6 text-gray-500">{campaign.date}</td>
-                  <td className="py-4 pr-6">
-                    <span className={`px-4 py-1.5 rounded-full text-[12px] font-semibold capitalize ${statusClasses(campaign.status)}`}>
-                      {campaign.status}
-                    </span>
-                  </td>
-                  <td className="py-4 pr-6">THB {campaign.budget.toLocaleString('en-US')}</td>
-                  <td className="py-4 pr-6">THB {campaign.spent.toLocaleString('en-US')}</td>
-                  <td className="py-4 pr-6">{campaign.conversions.toLocaleString('en-US')}</td>
-                  <td className="py-4 pr-6">{campaign.roi}%</td>
-                  <td className="py-4">
-                    <button
-                      type="button"
-                      onClick={() => toggleCampaignSelection(campaign.id)}
-                      className="relative inline-flex h-6 w-11 items-center rounded-full border transition-colors"
-                      style={{
-                        backgroundColor: isSelected ? '#f97316' : isDark ? '#020617' : '#e5e7eb',
-                        borderColor: isSelected ? '#fb923c' : isDark ? '#64748b' : '#d1d5db',
-                        boxShadow: isSelected
-                          ? isDark
-                            ? '0 0 10px rgba(249,115,22,0.7)'
-                            : '0 0 8px rgba(249,115,22,0.45)'
-                          : 'none',
-                      }}
-                      aria-pressed={isSelected}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
-                          isSelected ? 'translate-x-5' : 'translate-x-1'
-                        }`}
-                        style={{
-                          backgroundColor: '#ffffff',
-                          boxShadow: isSelected
-                            ? '0 2px 4px rgba(0,0,0,0.35)'
-                            : '0 1px 3px rgba(0,0,0,0.25)',
-                        }}
-                      />
-                    </button>
-                  </td>
-                </tr>
+                  <label
+                    key={col.key}
+                    className="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold shadow-sm select-none theme-text"
+                    style={{ backgroundColor: 'transparent', borderColor: 'var(--theme-border)' }}
+                  >
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-gray-300 text-orange-500 focus:ring-orange-300"
+                      checked={checked}
+                      onChange={() => toggleCampaignColumn(col.key)}
+                    />
+                    {col.label}
+                  </label>
                 );
               })}
-            </tbody>
-          </table>
+            </div>
+          </div>
+
+          <div className="relative">
+            <div
+              ref={campaignTableScrollRef}
+              onScroll={handleCampaignTableScroll}
+              className="overflow-x-auto overflow-y-auto max-h-[468px] scrollbar-hidden"
+            >
+              <table className="min-w-max text-base">
+                <thead>
+                  <tr className="text-[15px] uppercase font-semibold theme-text">
+                    <th
+                      className="py-3 pr-3 text-left sticky top-0 z-30 min-w-[260px] sm:min-w-[300px] lg:min-w-[340px] whitespace-nowrap"
+                      style={{ backgroundColor: 'var(--theme-surface)' }}
+                    >
+                      Campaign
+                    </th>
+                    {displayedCampaignColumns.map((key) => {
+                      const meta = campaignColumnMeta[key];
+                      const minWidthClass = meta?.minWidthClass ?? 'min-w-[120px]';
+                      const label = meta?.label ?? key;
+                      const isCompared = comparedCampaignColumns.includes(key);
+                      const isVisible = visibleCampaignColumns[key] !== false;
+
+                      return (
+                        <th
+                          key={key}
+                          className={`py-4 pr-6 theme-muted text-center sticky top-0 z-30 ${minWidthClass} whitespace-nowrap select-none ${isVisible ? 'cursor-grab active:cursor-grabbing' : ''} ${isCompared ? 'ring-2 ring-red-400/70' : ''}`}
+                          style={{
+                            backgroundColor: 'var(--theme-surface)',
+                            boxShadow: isCompared ? 'inset 0 -2px 0 rgba(239, 68, 68, 0.85)' : undefined,
+                          }}
+                          draggable={isVisible}
+                          onDragStart={(e) => {
+                            if (!isVisible) return;
+                            draggingCampaignColumnKeyRef.current = key;
+                            try {
+                              e.dataTransfer.effectAllowed = 'move';
+                              e.dataTransfer.setData('text/plain', key);
+                            } catch {
+                              // ignore
+                            }
+                          }}
+                          onDragEnd={() => {
+                            draggingCampaignColumnKeyRef.current = null;
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => toggleComparedCampaignColumn(key)}
+                          onDragOver={(e) => {
+                            if (!isVisible) return;
+                            e.preventDefault();
+                          }}
+                          onDrop={(e) => {
+                            if (!isVisible) return;
+                            e.preventDefault();
+                            const fromKey = draggingCampaignColumnKeyRef.current;
+                            draggingCampaignColumnKeyRef.current = null;
+                            if (!fromKey) return;
+                            moveCampaignColumn(fromKey, key);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              toggleComparedCampaignColumn(key);
+                            }
+                          }}
+                        >
+                          {label}
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {filteredCampaigns.map((campaign, index) => {
+                    const campaignExtra = campaign as unknown as Record<string, unknown>;
+                    return (
+                      <tr key={campaign.id} className="theme-text">
+                        <td
+                          className="py-3 pr-2 font-semibold theme-text min-w-[260px] sm:min-w-[300px] lg:min-w-[340px]"
+                          style={{ backgroundColor: 'var(--theme-surface)' }}
+                        >
+                          <div className="grid grid-cols-[auto,auto,1fr] items-center gap-2 min-w-0">
+                            <button
+                              type="button"
+                              onClick={() => toggleCampaignSelection(campaign.id)}
+                              className="relative inline-flex h-7 w-12 items-center rounded-full border transition-colors shrink-0"
+                              style={{
+                                backgroundColor: selectedCampaignIds.includes(campaign.id) ? '#f97316' : themeMode === 'dark' ? '#020617' : '#e5e7eb',
+                                borderColor: selectedCampaignIds.includes(campaign.id) ? '#fb923c' : themeMode === 'dark' ? '#64748b' : '#d1d5db',
+                                boxShadow: selectedCampaignIds.includes(campaign.id)
+                                  ? themeMode === 'dark'
+                                    ? '0 0 10px rgba(249,115,22,0.7)'
+                                    : '0 0 8px rgba(249,115,22,0.45)'
+                                  : 'none',
+                              }}
+                              aria-pressed={selectedCampaignIds.includes(campaign.id)}
+                            >
+                              <span
+                                className={`inline-block h-5 w-5 transform rounded-full shadow transition-transform ${selectedCampaignIds.includes(campaign.id) ? 'translate-x-6' : 'translate-x-1'
+                                  }`}
+                                style={{
+                                  backgroundColor: '#ffffff',
+                                  boxShadow: selectedCampaignIds.includes(campaign.id)
+                                    ? '0 2px 4px rgba(0,0,0,0.35)'
+                                    : '0 1px 3px rgba(0,0,0,0.25)',
+                                }}
+                              />
+                            </button>
+                            <span
+                              className="shrink-0 px-2 py-1 rounded-full text-[10px] font-semibold capitalize border shadow-sm"
+                              style={statusBadgeStyle(campaign.status)}
+                            >
+                              {campaign.status}
+                            </span>
+
+                            <span className="min-w-0">
+                              <span
+                                className="block truncate opacity-70"
+                                onMouseEnter={(e) => showCampaignNameTooltip(e, campaign.name)}
+                                onMouseMove={(e) => showCampaignNameTooltip(e, campaign.name)}
+                                onMouseLeave={hideCampaignNameTooltip}
+                              >
+                                {campaign.name}
+                              </span>
+                              <span className="block text-xs theme-muted truncate">{campaign.date}</span>
+                            </span>
+                          </div>
+                        </td>
+                        {displayedCampaignColumns.map((key) => {
+                          const meta = campaignColumnMeta[key];
+                          const minWidthClass = meta?.minWidthClass ?? 'min-w-[120px]';
+                          const isSelectedColumn = visibleCampaignColumns[key] !== false;
+                          const isCompared = comparedCampaignColumns.includes(key);
+
+                          let content: React.ReactNode = '-';
+                          if (isSelectedColumn) {
+                            if (key === 'budget') {
+                              content = `$${formatCompactInteger(campaign.budget)}`;
+                            } else if (key === 'spent') {
+                              content = `$${formatCompactInteger(campaign.spent)}`;
+                            } else if (key === 'conversions') {
+                              content = formatCompactInteger(campaign.conversions);
+                            } else if (key === 'roi') {
+                              content = `${campaign.roi}%`;
+                            } else if (key === 'roas') {
+                              const roiValue = Number(campaignExtra.roi ?? 0);
+                              const roasValue = 1 + roiValue / 100;
+                              content = `${roasValue.toFixed(2)}x`;
+                            } else if (key === 'impressions') {
+                              content = campaignExtra.impressions != null ? formatCompactInteger(Number(campaignExtra.impressions)) : '-';
+                            } else if (key === 'clicks') {
+                              content = campaignExtra.clicks != null ? formatCompactInteger(Number(campaignExtra.clicks)) : '-';
+                            } else if (key === 'ctr') {
+                              content = campaignExtra.ctr != null ? `${Number(campaignExtra.ctr).toFixed(2)}%` : '-';
+                            } else if (key === 'cpc') {
+                              content = campaignExtra.cpc != null ? `$${Number(campaignExtra.cpc).toFixed(2)}` : '-';
+                            } else if (key === 'cpm') {
+                              content = campaignExtra.cpm != null ? `$${Number(campaignExtra.cpm).toFixed(2)}` : '-';
+                            }
+                          }
+
+                          return (
+                            <td
+                              key={key}
+                              className={`py-4 pr-6 theme-text opacity-70 text-center ${minWidthClass} whitespace-nowrap ${isCompared ? 'bg-red-50/40' : ''}`}
+                            >
+                              {content}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {typeof document !== 'undefined' &&
+              campaignNameTooltip &&
+              createPortal(
+                <div
+                  className="pointer-events-none fixed rounded-2xl border px-4 py-3 text-sm"
+                  style={{
+                    left: campaignNameTooltip.left,
+                    top: campaignNameTooltip.top,
+                    transform: 'translateY(-100%)',
+                    width: 'max-content',
+                    maxWidth: 'calc(100vw - 48px)',
+                    backgroundColor: '#ffffff',
+                    borderColor: 'rgba(15, 23, 42, 0.14)',
+                    boxShadow: '0 18px 50px rgba(0,0,0,0.30)',
+                    zIndex: 9999,
+                  }}
+                >
+                  <span className="block font-semibold leading-snug text-slate-900 whitespace-nowrap overflow-hidden text-ellipsis">
+                    {campaignNameTooltip.name}
+                  </span>
+                </div>,
+                document.body
+              )}
+
+            <div
+              ref={campaignTableBottomScrollRef}
+              onScroll={handleCampaignTableBottomScroll}
+              className="mt-2 overflow-x-auto overflow-y-hidden"
+              style={{ height: 12 }}
+            >
+              <div style={{ width: campaignTableScrollWidth, height: 1 }} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        className="rounded-3xl border p-6 space-y-5"
+        style={{ backgroundColor: 'var(--theme-surface)', borderColor: 'var(--theme-border)', boxShadow: 'var(--theme-card-shadow)' }}
+      >
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div className="space-y-1">
+            <p className="text-[20px] font-bold theme-text">Campaign Summary</p>
+            <p className="text-sm theme-muted">{summarySubtitle}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="theme-panel rounded-2xl p-4 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase theme-muted">Spent</p>
+            <p className="mt-1 text-[18px] font-bold theme-text">${Math.round(performanceSummary.spent).toLocaleString('en-US')}</p>
+          </div>
+          <div className="theme-panel rounded-2xl p-4 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase theme-muted">Impressions</p>
+            <p className="mt-1 text-[18px] font-bold theme-text">{Math.round(performanceSummary.impressions).toLocaleString('en-US')}</p>
+          </div>
+          <div className="theme-panel rounded-2xl p-4 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase theme-muted">Clicks</p>
+            <p className="mt-1 text-[18px] font-bold theme-text">{Math.round(performanceSummary.clicks).toLocaleString('en-US')}</p>
+          </div>
+          <div className="theme-panel rounded-2xl p-4 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase theme-muted">CTR</p>
+            <p className="mt-1 text-[18px] font-bold theme-text">{performanceSummary.ctr.toFixed(2)}%</p>
+          </div>
+          <div className="theme-panel rounded-2xl p-4 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase theme-muted">ROI</p>
+            <p className="mt-1 text-[18px] font-bold theme-text">{campaignSummary.avgRoi.toFixed(1)}%</p>
+          </div>
+          <div className="theme-panel rounded-2xl p-4 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase theme-muted">ROAS</p>
+            <p className="mt-1 text-[18px] font-bold theme-text">{(1 + campaignSummary.avgRoi / 100).toFixed(2)}x</p>
+          </div>
+          <div className="theme-panel rounded-2xl p-4 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase theme-muted">CPC</p>
+            <p className="mt-1 text-[18px] font-bold theme-text">${performanceSummary.cpc.toFixed(2)}</p>
+          </div>
+          <div className="theme-panel rounded-2xl p-4 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase theme-muted">CPM</p>
+            <p className="mt-1 text-[18px] font-bold theme-text">${performanceSummary.cpm.toFixed(2)}</p>
           </div>
         </div>
       </div>
@@ -2987,10 +4394,10 @@ const CampaignSourceTabs: React.FC<{
               <div className={`${themePanelClass} space-y-4 shadow-inner`}>
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className={`text-sm font-semibold ${palette.text}`}>Budget vs Spend</p>
-                    <p className={`text-xs ${palette.subtext}`}>Includes ROI overlay for the latest campaigns</p>
+                    <p className="text-sm font-semibold theme-text">Budget vs Spend</p>
+                    <p className="text-xs theme-muted">Includes ROI overlay for the latest campaigns</p>
                   </div>
-                  <span className={`text-[15px] uppercase ${palette.subtext}`}>Mock</span>
+                  <span className="text-[15px] uppercase theme-muted">Mock</span>
                 </div>
                 <div className="h-72">
                   <ResponsiveContainer width="100%" height="100%">
@@ -3020,9 +4427,9 @@ const CampaignSourceTabs: React.FC<{
                       />
                       <RechartsTooltip
                         cursor={{ fill: chartTheme === 'carbon' ? palette.area : 'rgba(249,115,22,0.10)' }}
-                        formatter={(value, name: string) => {
+                        formatter={(value: unknown, name: string) => {
                           if (name === 'roi') return [`${value}%`, 'ROI'];
-                          return [`THB ${Number(value).toLocaleString('en-US')}`, name === 'budget' ? 'Budget' : 'Spend'];
+                          return [`$${Number(value ?? 0).toLocaleString('en-US')}`, name === 'budget' ? 'Budget' : 'Spend'];
                         }}
                       />
                       <Legend wrapperStyle={{ color: palette.legend }} />
@@ -3043,7 +4450,7 @@ const CampaignSourceTabs: React.FC<{
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div className="theme-panel-soft rounded-2xl p-3 shadow-sm border border-gray-100/60">
                     <p className="text-xs uppercase theme-muted">Total Spend</p>
-                    <p className="mt-1 text-lg font-semibold theme-text">THB {totalCampaignSpend.toLocaleString('en-US')}</p>
+                    <p className="mt-1 text-lg font-semibold theme-text">${totalCampaignSpend.toLocaleString('en-US')}</p>
                   </div>
                   <div className="theme-panel-soft rounded-2xl p-3 shadow-sm border border-emerald-200/70">
                     <p className="text-xs uppercase" style={{ color: '#6ee7b7' }}>Top ROI</p>
@@ -3115,101 +4522,7 @@ const CampaignSourceTabs: React.FC<{
                 </div>
               </div>
             </div>
-            <div className="rounded-3xl border border-gray-100 bg-white p-6 space-y-4 h-full xl:col-span-2">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-[24px] font-semibold text-gray-900">Detailed Ad Performance</p>
-                  <p className="text-[18px] text-gray-500">Campaign-level spend and engagement</p>
-                </div>
-                <button
-                  className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-                  onClick={handleDetailedAdPerformanceDownload}
-                >
-                  <Download className="h-4 w-4" />
-                  Download
-                </button>
-              </div>
-              <div className="relative flex-1">
-                <div
-                  ref={detailedAdPerformanceScrollRef}
-                  onScroll={updateDetailedAdPerformanceScrollState}
-                  className="overflow-x-auto scroll-smooth scrollbar-hidden rounded-2xl border border-gray-100/60"
-                >
-                  <table className="min-w-max w-full text-sm table-auto">
-                    <thead>
-                      <tr
-                        className="text-left text-[11px] uppercase tracking-wider font-semibold border-b break-normal"
-                        style={{ backgroundColor: 'var(--surface-muted)', color: 'var(--theme-muted)', borderColor: 'var(--theme-border)' }}
-                      >
-                        <th className="py-3 pr-6 whitespace-nowrap break-normal w-[34%]">Campaign</th>
-                        <th className="py-3 pr-6 whitespace-nowrap break-normal text-right w-[11%]">Spend</th>
-                        <th className="py-3 pr-6 whitespace-nowrap break-normal text-right w-[13%]">Impressions</th>
-                        <th className="py-3 pr-6 whitespace-nowrap break-normal text-right w-[11%]">Clicks</th>
-                        <th className="py-3 pr-6 whitespace-nowrap break-normal text-right w-[8%]">CTR</th>
-                        <th className="py-3 pr-6 whitespace-nowrap break-normal text-right w-[11%]">CPC</th>
-                        <th className="py-3 pr-6 whitespace-nowrap break-normal text-right w-[12%]">CPM</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100/70">
-                      {efficiencyData.map((campaign) => (
-                        <tr
-                          key={campaign.campaign}
-                          className="group text-gray-600 hover:bg-orange-500 hover:text-white hover:shadow-sm transition-colors duration-150 cursor-pointer"
-                        >
-                          <td className="py-4 pr-6 font-semibold text-gray-900 group-hover:text-white">{campaign.campaign}</td>
-                          <td className="py-4 pr-6 text-right tabular-nums font-semibold group-hover:text-white">{campaign.spend}</td>
-                          <td className="py-4 pr-6 text-right tabular-nums font-semibold group-hover:text-white">{campaign.impressions}</td>
-                          <td className="py-4 pr-6 text-right tabular-nums font-semibold group-hover:text-white">{campaign.clicks}</td>
-                          <td className="py-4 pr-6 text-right tabular-nums font-semibold group-hover:text-white">{campaign.ctr}</td>
-                          <td className="py-4 pr-6 text-right tabular-nums font-semibold group-hover:text-white">{campaign.cpc}</td>
-                          <td className="py-4 pr-6 text-right tabular-nums font-semibold group-hover:text-white">{campaign.cpm}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
 
-                {(canScrollDetailedLeft || canScrollDetailedRight) && (
-                  <div className="pointer-events-none absolute inset-y-0 left-0 right-0">
-                    <div className="absolute inset-y-0 left-0 flex items-center pl-2">
-                      <button
-                        type="button"
-                        className={`pointer-events-auto h-9 w-9 rounded-full border text-sm font-bold shadow-sm transition-colors ${
-                          canScrollDetailedLeft
-                            ? 'bg-white/90 hover:bg-white border-gray-200 text-gray-800'
-                            : 'bg-white/60 border-gray-100 text-gray-300'
-                        }`}
-                        onClick={() => scrollDetailedAdPerformance('left')}
-                        disabled={!canScrollDetailedLeft}
-                        aria-label="Scroll left"
-                      >
-                        {'<'}
-                      </button>
-                    </div>
-                    <div className="absolute inset-y-0 right-0 flex items-center pr-2">
-                      <button
-                        type="button"
-                        className={`pointer-events-auto h-9 w-9 rounded-full border text-sm font-bold shadow-sm transition-colors ${
-                          canScrollDetailedRight
-                            ? 'bg-white/90 hover:bg-white border-gray-200 text-gray-800'
-                            : 'bg-white/60 border-gray-100 text-gray-300'
-                        }`}
-                        onClick={() => scrollDetailedAdPerformance('right')}
-                        disabled={!canScrollDetailedRight}
-                        aria-label="Scroll right"
-                      >
-                        {'>'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-              <div className="flex justify-center pt-4">
-                <button className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors">
-                  Learn more
-                </button>
-              </div>
-            </div>
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -3265,8 +4578,8 @@ const CampaignSourceTabs: React.FC<{
                         background: index % 3 === 0
                           ? 'linear-gradient(135deg, #0f172a, #1d4ed8)'
                           : index % 3 === 1
-                          ? 'linear-gradient(135deg, #4c1d95, #db2777)'
-                          : 'linear-gradient(135deg, #0f766e, #22d3ee)',
+                            ? 'linear-gradient(135deg, #4c1d95, #db2777)'
+                            : 'linear-gradient(135deg, #0f766e, #22d3ee)',
                       }}
                     >
                       <div className="absolute inset-0 flex items-center justify-center">
@@ -3335,8 +4648,8 @@ const LtvComparisonChart: React.FC<{ data: { label: string; ltv: number; cac: nu
           <YAxis tickLine={false} tick={{ fontSize: 11, fill: '#6b7280' }} domain={[0, 1000]} />
           <RechartsTooltip
             cursor={{ fill: 'rgba(249,115,22,0.06)' }}
-            formatter={(value: any, name: string) => [
-              `THB ${Number(value).toLocaleString('en-US')}`,
+            formatter={(value: unknown, name: string) => [
+              `$${Number(value ?? 0).toLocaleString('en-US')}`,
               name.toUpperCase(),
             ]}
           />
@@ -3361,7 +4674,7 @@ const LtvComparisonChart: React.FC<{ data: { label: string; ltv: number; cac: nu
       </ResponsiveContainer>
     </div>
   );
-} 
+}
 
 const CONVERSION_PLATFORM_PROVIDERS: Record<string, string> = {
   Facebook: 'facebook',
@@ -3377,7 +4690,13 @@ const ConversionPlatformBars: React.FC<{
 }> = ({ data, connectionStatus }) => {
   const animated = useAnimatedReveal();
 
-  const colors = ['#4267B2', '#FBBC05', '#F97316', '#00C300', '#EE1D52'];
+  const platformColors: Record<string, string> = {
+    Facebook: '#4267B2',
+    Google: '#FBBC05',
+    'Google Analytics': '#F97316',
+    LINE: '#00C300',
+    TikTok: '#111827',
+  };
 
   const total = data.reduce((sum, item) => sum + item.value, 0);
   const best = data.reduce((prev, curr) => (curr.value > prev.value ? curr : prev), data[0]);
@@ -3400,24 +4719,27 @@ const ConversionPlatformBars: React.FC<{
       <div className="mt-2 space-y-3">
         {ranked.map((item, index) => {
           const share = total ? (item.value / total) * 100 : 0;
-          const color = colors[index] ?? colors[colors.length - 1];
+          const color = platformColors[item.platform] || 'var(--accent-color)';
+          const iconColor = item.platform === 'TikTok' ? '#111827' : color;
+          const barColor = item.platform === 'TikTok' ? '#9CA3AF' : color;
           const isTop = item.platform === best.platform;
           const provider = CONVERSION_PLATFORM_PROVIDERS[item.platform];
           const isConnected = provider ? connectionStatus?.[provider] === 'connected' : false;
-          const iconBg = isConnected ? color : `${color}30`;
-          const fillColor = isConnected ? color : `${color}55`;
+          const iconBg = isConnected ? iconColor : `${iconColor}30`;
+          const fillColor = isConnected ? barColor : `${barColor}55`;
           const iconFilter = isConnected ? 'drop-shadow(0 6px 14px rgba(15, 23, 42, 0.15))' : 'grayscale(0.2)';
+          const cardGlow = isConnected ? `0 18px 45px -28px ${barColor}AA` : undefined;
 
           return (
             <div
               key={item.platform}
-              className={`flex items-center justify-between rounded-3xl border px-6 py-7 text-xs sm:text-sm shadow-sm transition-colors ${
-                animated ? 'transition-all duration-500 ease-out' : ''
-              } ${isConnected ? 'theme-panel-soft' : 'theme-panel-soft border-dashed opacity-90'}`}
+              className={`flex items-center justify-between rounded-3xl border px-6 py-7 text-xs sm:text-sm shadow-sm transition-colors ${animated ? 'transition-all duration-500 ease-out' : ''
+                } ${isConnected ? 'theme-panel-soft' : 'theme-panel-soft border-dashed opacity-90'}`}
               style={{
                 transform: animated ? 'translateY(0)' : 'translateY(4px)',
                 opacity: animated ? 1 : 0,
                 transitionDelay: animated ? `${index * 70}ms` : undefined,
+                boxShadow: cardGlow,
               }}
             >
               <div className="flex gap-3 min-w-[140px] items-center">
@@ -3465,14 +4787,23 @@ const ConversionPlatformBars: React.FC<{
   );
 };
 
-const FunnelVisualizer: React.FC<{ steps: { label: string; value: number; color: string }[] }> = ({ steps }) => {
+const FunnelVisualizer: React.FC<{
+  steps: { label: string; value: number; color: string }[];
+  variant?: 'light' | 'dark';
+}> = ({ steps, variant = 'light' }) => {
   const animated = useAnimatedReveal();
+  const isDark = variant === 'dark';
+
+  const labelClass = isDark ? 'text-white/90' : 'text-gray-900';
+  const valueClass = isDark ? 'text-white' : 'text-gray-800';
+  const legendClass = isDark ? 'text-sky-100/70' : 'text-gray-500';
+
   return (
     <div className="space-y-6">
       {steps.map((step, index) => {
         const percent = ((steps.length - index) / steps.length) * 100;
-        const topRadius = 18 - index * 4;
         const highlightColor = adjustHexColor(step.color, 0.2);
+
         return (
           <div key={step.label} className="flex items-center justify-between group">
             <div
@@ -3481,31 +4812,27 @@ const FunnelVisualizer: React.FC<{ steps: { label: string; value: number; color:
                 width: animated ? `${percent}%` : '0%',
                 maxWidth: '100%',
                 background: `linear-gradient(90deg, ${step.color}, ${highlightColor})`,
-                borderTopLeftRadius: `${topRadius}px`,
-                borderTopRightRadius: `${topRadius}px`,
-                borderBottomLeftRadius: `${Math.max(topRadius - 4, 4)}px`,
-                borderBottomRightRadius: `${Math.max(topRadius - 4, 4)}px`,
+                borderRadius: '999px',
                 mixBlendMode: 'normal',
                 filter: 'brightness(1.05)',
               }}
             >
-              {/* Blending overlay effect */}
-              <div 
+              <div
                 className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300"
                 style={{
-                  background: `linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent)`,
+                  background: `linear-gradient(90deg, transparent, rgba(255,255,255,0.28), transparent)`,
                   mixBlendMode: 'overlay',
                 }}
               />
             </div>
-            <div className="text-sm min-w-[140px] text-right flex-shrink-0 ml-4">
-              <p className="font-semibold text-gray-900 text-base">{step.label}</p>
-              <p className="text-2xl font-semibold text-gray-800">{step.value.toLocaleString('en-US')}</p>
+            <div className="text-sm min-w-[140px] text-right flex-shrink-0 ml-6">
+              <p className={`font-semibold text-base ${labelClass}`}>{step.label}</p>
+              <p className={`text-3xl font-semibold tracking-tight ${valueClass}`}>{step.value.toLocaleString('en-US')}</p>
             </div>
           </div>
         );
       })}
-      <div className="flex gap-4 text-xs text-gray-500">
+      <div className={`flex gap-4 text-xs ${legendClass}`}>
         {steps.map((step) => (
           <span key={step.label} className="flex items-center gap-1">
             <span className="h-2 w-2 rounded-full" style={{ backgroundColor: step.color }} />
@@ -3517,12 +4844,39 @@ const FunnelVisualizer: React.FC<{ steps: { label: string; value: number; color:
   );
 };
 
+const MOCK_INTEGRATION_STORAGE_KEY = 'mockIntegrationConnections';
+const DASHBOARD_SCROLL_TARGET_KEY = 'rga_scroll_target';
+
 interface DashboardProps {
   onLogout?: () => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const navigate = useNavigate();
+  const { user: currentUser } = useCurrentUser();
+  const defaultRecipientEmail = useMemo(() => {
+    const email = typeof currentUser?.email === 'string' ? currentUser.email.trim() : '';
+    return email || 'admin@rga.com';
+  }, [currentUser]);
+
+  type RequiredPlatformConfig = {
+    id: string;
+    label: string;
+    provider: string;
+    category: string;
+    accent?: string;
+    iconSlug?: string;
+    iconColorDark?: string;
+    iconColorLight?: string;
+    color: string;
+    description: string;
+  };
+
+  type IntegrationStep = RequiredPlatformConfig & {
+    status: 'connected' | 'disconnected';
+    integration?: Integration;
+  };
+
   const {
     metrics: rawMetrics,
     loading: metricsLoading,
@@ -3541,6 +4895,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     integrations: useRef<HTMLDivElement | null>(null),
     aiSummaries: useRef<HTMLDivElement | null>(null),
     performance: useRef<HTMLDivElement | null>(null),
+    conversionsPlatform: useRef<HTMLDivElement | null>(null),
+  };
+  const settingsSectionRefs = {
+    root: useRef<HTMLDivElement | null>(null),
+    header: useRef<HTMLDivElement | null>(null),
+    integrations: useRef<HTMLDivElement | null>(null),
   };
   const campaignSectionRefs = {
     performance: useRef<HTMLDivElement | null>(null),
@@ -3548,14 +4908,34 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   };
   const initialRealtime = mockOverviewRealtime['7D']?.[0]?.id || 'active-now';
   const [selectedRealtimeId, setSelectedRealtimeId] = useState<string>(initialRealtime);
-  const [selectedRange, setSelectedRange] = useState<'Today' | '7D' | '30D'>('7D');
-  const [compareMode, setCompareMode] = useState<'previous' | 'target'>('previous');
+  const [selectedRange] = useState<'Today' | '7D' | '30D'>('7D');
+  const [compareMode] = useState<'previous' | 'target'>('previous');
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [productCategory, setProductCategory] = useState<string>('All');
   const [settingsData, setSettingsData] = useState<SettingsData>(() => buildDefaultSettings());
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
+
+  const realtimeModeEnabled = Boolean(settingsData.refresh.realtime);
+  const RealTimeCardWithRealtime: React.FC<React.ComponentProps<typeof RealTimeCard>> = (props) => (
+    <RealTimeCard {...props} realtimeModeEnabled={realtimeModeEnabled} />
+  );
+
+  useEffect(() => {
+    if (!settingsHydrated) return;
+    const normalized = defaultRecipientEmail;
+    if (!normalized) return;
+    setSettingsData((prev) => {
+      if (prev.alerts.recipients.includes(normalized)) return prev;
+      return {
+        ...prev,
+        alerts: {
+          ...prev.alerts,
+          recipients: [normalized, ...prev.alerts.recipients],
+        },
+      };
+    });
+  }, [defaultRecipientEmail, settingsHydrated]);
 
   const handleMenuChange = useCallback((value: string) => {
     const normalized = normalizeColorInput(value);
@@ -3600,20 +4980,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     });
   }, []);
 
-  const handleAlertRemoveRecipient = useCallback((email: string) => {
-    setSettingsData((prev) => ({
-      ...prev,
-      alerts: {
-        ...prev.alerts,
-        recipients: prev.alerts.recipients.filter((item) => item !== email),
-      },
-    }));
-  }, []);
+  const handleAlertRemoveRecipient = useCallback(
+    (email: string) => {
+      const normalizedDefault = defaultRecipientEmail;
+      if (normalizedDefault && email === normalizedDefault) return;
+      setSettingsData((prev) => ({
+        ...prev,
+        alerts: {
+          ...prev.alerts,
+          recipients: prev.alerts.recipients.filter((item) => item !== email),
+        },
+      }));
+    },
+    [defaultRecipientEmail],
+  );
 
-  const handleUpdateKpi = useCallback((id: string, patch: Partial<any>) => {
+  const handleUpdateKpi = useCallback((id: string, patch: Partial<KpiSettingRow>) => {
     setSettingsData((prev) => ({
       ...prev,
-      kpis: prev.kpis.map((kpi: any) => (kpi.id === id ? { ...kpi, ...patch } : kpi)),
+      kpis: prev.kpis.map((kpi) => (kpi.id === id ? { ...kpi, ...patch } : kpi)),
     }));
   }, []);
 
@@ -3627,10 +5012,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     const metric = metricOptions[0];
     const summary = KPI_METRIC_SUMMARY?.[metric];
 
-    const id =
-      typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function'
-        ? (crypto as any).randomUUID()
-        : `kpi-${Date.now()}`;
+    const maybeCrypto = typeof crypto !== 'undefined' ? (crypto as Crypto & { randomUUID?: () => string }) : undefined;
+    const id = typeof maybeCrypto?.randomUUID === 'function' ? maybeCrypto.randomUUID() : `kpi-${Date.now()}`;
 
     setSettingsData((prev) => ({
       ...prev,
@@ -3643,15 +5026,23 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
           condition: summary?.condition || KPI_CONDITION_OPTIONS[0],
           threshold: summary?.threshold || '',
           status: summary?.status || 'active',
+          platform: '',
         },
       ],
     }));
   }, []);
 
+  // SEO Refs
+  const seoSectionRefs = {
+    overview: useRef<HTMLDivElement>(null),
+    regional: useRef<HTMLDivElement>(null),
+    competitors: useRef<HTMLDivElement>(null),
+  };
+
   const handleRemoveKpi = useCallback((id: string) => {
     setSettingsData((prev) => ({
       ...prev,
-      kpis: prev.kpis.filter((kpi: any) => kpi.id !== id),
+      kpis: prev.kpis.filter((kpi) => kpi.id !== id),
     }));
   }, []);
 
@@ -3661,7 +5052,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         ...prev,
         alerts: {
           ...prev.alerts,
-          [group]: prev.alerts[group].map((item: any) =>
+          [group]: prev.alerts[group].map((item) =>
             item.label === label ? { ...item, enabled: !item.enabled } : item,
           ),
         },
@@ -3683,35 +5074,59 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
           const storedBranding = window.localStorage.getItem(BRANDING_STORAGE_KEY);
 
           if (storedSettings) {
-            const parsedSettings = JSON.parse(storedSettings);
+            const parsedSettings: unknown = JSON.parse(storedSettings);
             const baseMenu =
               Array.isArray(KPI_ALERT_MENU_OPTIONS) && KPI_ALERT_MENU_OPTIONS.length > 0
                 ? KPI_ALERT_MENU_OPTIONS[0]
                 : 'Overview Dashboard';
-            const cleanedSettings = {
-              ...parsedSettings,
-              kpis: Array.isArray(parsedSettings?.kpis)
-                ? parsedSettings.kpis.map((kpi: any) => {
-                    const alertName = typeof kpi?.alertName === 'string' ? kpi.alertName.trim() : '';
-                    if (alertName !== 'MENU Dashboard') return kpi;
-                    const nextAlertName = 'Overview Dashboard';
-                    const nextMetricOptions =
-                      KPI_METRIC_OPTIONS?.[nextAlertName] || KPI_METRIC_OPTIONS?.[baseMenu] || ['Financial Overview'];
-                    return {
-                      ...kpi,
-                      alertName: nextAlertName,
-                      metric: nextMetricOptions[0],
-                    };
-                  })
-                : parsedSettings?.kpis,
+            const parsedRecord = isRecord(parsedSettings) ? parsedSettings : {};
+            const rawKpis = parsedRecord.kpis;
+            const coerceKpiRow = (value: unknown, index: number): KpiSettingRow => {
+              const row = isRecord(value) ? value : {};
+              const storedId = typeof row.id === 'string' && row.id.trim() ? row.id : '';
+              const id = storedId || `kpi-${Date.now()}-${index}`;
+              const alertName = typeof row.alertName === 'string' ? row.alertName.trim() : '';
+              const nextAlertName = alertName === 'MENU Dashboard' ? 'Overview Dashboard' : alertName || defaults.kpis[0]?.alertName || 'Overview Dashboard';
+              const nextMetricOptions =
+                KPI_METRIC_OPTIONS?.[nextAlertName] || KPI_METRIC_OPTIONS?.[baseMenu] || ['Financial Overview'];
+              const metric = typeof row.metric === 'string' && row.metric.trim() ? row.metric : nextMetricOptions[0];
+              const condition = typeof row.condition === 'string' && row.condition.trim() ? row.condition : defaults.kpis[0]?.condition || 'Above';
+              const threshold = typeof row.threshold === 'string' ? row.threshold : defaults.kpis[0]?.threshold || '';
+              const status = typeof row.status === 'string' && row.status.trim() ? row.status : defaults.kpis[0]?.status || 'Active';
+              const platform = typeof row.platform === 'string' ? row.platform : '';
+
+              return {
+                id,
+                alertName: nextAlertName,
+                metric,
+                condition,
+                threshold,
+                status,
+                platform,
+              };
             };
+
+            const nextKpis: SettingsData['kpis'] = Array.isArray(rawKpis)
+              ? rawKpis.map((kpi, index) => coerceKpiRow(kpi, index))
+              : defaults.kpis;
+
+            const cleanedSettings: Partial<SettingsData> = {
+              ...parsedRecord,
+              kpis: nextKpis,
+            };
+
+            const brandingFromStorage = isRecord(cleanedSettings.branding) ? cleanedSettings.branding : undefined;
             // Merge stored settings over defaults to avoid breaking shape
             setSettingsData({
               ...defaults,
               ...cleanedSettings,
               branding: {
                 ...defaults.branding,
-                ...(cleanedSettings.branding || {}),
+                ...(brandingFromStorage || {}),
+                theme:
+                  brandingFromStorage?.theme === 'Canvas'
+                    ? 'Light'
+                    : (brandingFromStorage?.theme as ThemeName) || defaults.branding.theme,
               },
             });
           } else if (storedBranding) {
@@ -3721,6 +5136,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
               branding: {
                 ...defaults.branding,
                 ...parsedBranding,
+                theme: parsedBranding?.theme === 'Canvas' ? 'Light' : parsedBranding?.theme,
               },
             });
           } else {
@@ -3733,8 +5149,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         setSettingsData(defaults);
       }
       setSettingsHydrated(true);
-    } catch (err: any) {
-      setSettingsError(err?.message || 'Failed to load settings');
+    } catch (err: unknown) {
+      setSettingsError(getErrorMessage(err, 'Failed to load settings'));
     } finally {
       setSettingsLoading(false);
     }
@@ -3761,20 +5177,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     const menuText = normalizeHex(matchedPair?.text || '#f97316');
     const accent = normalizeHex(settingsData.branding.accentColor || menuText);
     const isDark = themeName === 'Dark';
-    const isCanvas = themeName === 'Canvas';
 
-    const background = isDark ? '#04060b' : isCanvas ? '#fff9f1' : '#fdf6f0';
-    const surface = isDark ? '#111827' : isCanvas ? '#fffaf2' : '#ffffff';
-    const surfaceMuted = isDark ? '#1a2135' : isCanvas ? '#fff2e0' : '#fdf6f0';
-    const textPrimary = isDark ? '#f7f9ff' : isCanvas ? '#402b1a' : '#1f232c';
-    const textMuted = isDark ? '#a9b4cc' : isCanvas ? '#8b5f40' : '#6b7280';
-    const sectionFrom = isDark ? '#0b0f1a' : isCanvas ? '#fff1db' : '#fff5ec';
-    const sectionTo = isDark ? '#05070f' : isCanvas ? '#fffaf1' : '#ffffff';
-    const border = isDark ? 'rgba(148, 163, 184, 0.28)' : isCanvas ? 'rgba(245, 160, 98, 0.35)' : 'rgba(15, 23, 42, 0.08)';
-    const cardShadow = isDark ? '0 40px 140px rgba(0,0,0,0.65)' : isCanvas ? '0 30px 80px rgba(249, 115, 22, 0.18)' : '0 25px 80px rgba(15,23,42,0.08)';
-
-    // Use a consistent gradient offset for all themes so Light/Dark/Canvas
-    // share the same style of sidebar color transition
+    const background = isDark ? '#04060b' : '#fdf6f0';
+    const surface = isDark ? '#111827' : '#ffffff';
+    const surfaceMuted = isDark ? '#1a2135' : '#fdf6f0';
+    const textPrimary = isDark ? '#f7f9ff' : '#1f232c';
+    const textMuted = isDark ? '#a9b4cc' : '#6b7280';
+    const sectionFrom = isDark ? '#0b0f1a' : '#fff5ec';
+    const sectionTo = isDark ? '#05070f' : '#ffffff';
+    const border = isDark ? 'rgba(148, 163, 184, 0.28)' : 'rgba(15, 23, 42, 0.08)';
+    const cardShadow = isDark ? '0 40px 140px rgba(0,0,0,0.65)' : '0 25px 80px rgba(15,23,42,0.08)';
     const sidebarFrom = adjustHexColor(menu, -0.08);
     const sidebarTo = adjustHexColor(menu, 0.12);
 
@@ -3793,7 +5205,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       sectionTo,
       border,
       cardShadow,
-      mode: isDark ? 'dark' : isCanvas ? 'canvas' : 'light',
+      mode: isDark ? 'dark' : 'light',
     };
   }, [settingsData.branding]);
 
@@ -3847,50 +5259,74 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [actionTarget, setActionTarget] = useState<string | null>(null);
   const { notifications, loading: loadingNotifications, error: notificationError, refetch } = useIntegrationNotifications('open');
   const [platformAlert, setPlatformAlert] = useState<{ title: string; description: string; timestamp: string } | null>(null);
+  const [mockIntegrationConnections, setMockIntegrationConnections] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = window.localStorage.getItem(MOCK_INTEGRATION_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, boolean>) : {};
+    } catch {
+      return {};
+    }
+  });
 
   // Platform configuration for Integration Checklist
-  const REQUIRED_PLATFORMS = [
-    {
-      id: 'googleads',
-      label: 'Google Ads',
-      provider: 'googleads',
-      icon: <img src="https://cdn.simpleicons.org/googleads/FFFFFF" className="h-8 w-8" alt="Google Ads" />,
-      color: 'bg-red-500',
-      description: 'Sync campaigns and conversion data from Google Ads.',
-    },
-    {
-      id: 'googleanalytics',
-      label: 'Google Analytics',
-      provider: 'googleanalytics',
-      icon: <img src="https://cdn.simpleicons.org/googleanalytics/FFFFFF" className="h-8 w-8" alt="Google Analytics" />,
-      color: 'bg-orange-500',
-      description: 'Track website traffic and user behavior analytics.',
-    },
-    {
-      id: 'facebook',
-      label: 'Facebook',
-      provider: 'facebook',
-      icon: <img src="https://cdn.simpleicons.org/facebook/FFFFFF" className="h-8 w-8" alt="Facebook" />,
-      color: 'bg-blue-600',
-      description: 'Connect Meta Ads for real-time performance.',
-    },
-    {
-      id: 'line',
-      label: 'LINE OA',
-      provider: 'line',
-      icon: <img src="https://cdn.simpleicons.org/line/FFFFFF" className="h-8 w-8" alt="LINE" />,
-      color: 'bg-green-500',
-      description: 'Pull CRM and messaging KPIs from LINE OA.',
-    },
-    {
-      id: 'tiktok',
-      label: 'TikTok Ads',
-      provider: 'tiktok',
-      icon: <img src="https://cdn.simpleicons.org/tiktok/FFFFFF" className="h-8 w-8" alt="TikTok" />,
-      color: 'bg-zinc-900',
-      description: 'Monitor short-form video campaigns from TikTok.',
-    },
-  ];
+  const REQUIRED_PLATFORMS = useMemo(
+    (): RequiredPlatformConfig[] => [
+      {
+        id: 'googleads',
+        label: 'Google Ads',
+        provider: 'googleads',
+        category: 'ADS',
+        accent: '#ef4444',
+        iconSlug: 'googleads',
+        color: 'bg-red-500',
+        description: 'Sync campaigns and conversion data from Google Ads.',
+      },
+      {
+        id: 'googleanalytics',
+        label: 'Google Analytics',
+        provider: 'googleanalytics',
+        category: 'ANALYTICS',
+        accent: '#f97316',
+        iconSlug: 'googleanalytics',
+        color: 'bg-orange-500',
+        description: 'Track website traffic and user behavior analytics.',
+      },
+      {
+        id: 'facebook',
+        label: 'Facebook',
+        provider: 'facebook',
+        category: 'ADS',
+        accent: '#2563eb',
+        iconSlug: 'facebook',
+        color: 'bg-blue-600',
+        description: 'Connect Meta Ads for real-time performance.',
+      },
+      {
+        id: 'line',
+        label: 'LINE OA',
+        provider: 'line',
+        category: 'ADS',
+        accent: '#22c55e',
+        iconSlug: 'line',
+        color: 'bg-green-500',
+        description: 'Pull CRM and messaging KPIs from LINE OA.',
+      },
+      {
+        id: 'tiktok',
+        label: 'TikTok Ads',
+        provider: 'tiktok',
+        category: 'ADS',
+        accent: '#111827',
+        iconSlug: 'tiktok',
+        iconColorDark: 'FFFFFF',
+        iconColorLight: 'FFFFFF',
+        color: 'bg-zinc-900',
+        description: 'Monitor short-form video campaigns from TikTok.',
+      },
+    ],
+    []
+  );
 
   const isLoading = metricsLoading || campaignsLoading;
   const error = metricsError || campaignsError;
@@ -3973,8 +5409,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       setIntegrationError(null);
       const data = await getIntegrations();
       setIntegrations(data || []);
-    } catch (err: any) {
-      setIntegrationError(err?.response?.data?.message || 'Unable to load integration status from the API');
+    } catch (err: unknown) {
+      const message = getAxiosLikeErrorMessage(err);
+      setIntegrationError((message && message.trim()) || 'Unable to load integration status from the API');
     } finally {
       setIntegrationLoading(false);
     }
@@ -3982,12 +5419,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
 
   useEffect(() => {
     fetchSettings();
-  }, []);
+  }, [fetchSettings]);
 
   useEffect(() => {
     loadIntegrations();
     refetch();
-  }, [loadIntegrations]);
+  }, [loadIntegrations, refetch]);
 
   const integrationMap = useMemo(() => {
     return integrations.reduce<Record<string, Integration>>((acc, integration) => {
@@ -3996,17 +5433,67 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     }, {});
   }, [integrations]);
 
-  const integrationSteps = useMemo(() => {
+  const integrationSteps = useMemo<IntegrationStep[]>(() => {
     return REQUIRED_PLATFORMS.map((platform) => {
       const integration = integrationMap[platform.provider];
-      const isConnected = Boolean(integration?.isActive);
+      const isConnected = Boolean(integration?.isActive) || Boolean(mockIntegrationConnections?.[platform.provider]);
       return {
         ...platform,
-        status: isConnected ? ('connected' as const) : ('disconnected' as const),
+        status: isConnected ? 'connected' : 'disconnected',
         integration,
       };
     });
-  }, [integrationMap]);
+  }, [integrationMap, mockIntegrationConnections, REQUIRED_PLATFORMS]);
+
+  const connectedIntegrationProviders = useMemo(() => {
+    const connected = new Set<string>();
+
+    (integrations || []).forEach((integration) => {
+      if (integration?.provider && integration.isActive) {
+        connected.add(String(integration.provider));
+      }
+    });
+
+    Object.entries(mockIntegrationConnections || {}).forEach(([provider, active]) => {
+      if (active) {
+        connected.add(String(provider));
+      }
+    });
+
+    return connected;
+  }, [integrations, mockIntegrationConnections]);
+
+  const platformOptions = useMemo<string[]>(() => {
+    if (!connectedIntegrationProviders.size) {
+      return [];
+    }
+
+    const labelByProvider: Record<string, string> = {
+      facebook: 'Facebook',
+      googleads: 'Google Ads',
+      googleanalytics: 'Google Analytics',
+      line: 'LINE',
+      tiktok: 'TikTok',
+      instagram: 'Instagram',
+      partner: 'Partner',
+      shopee: 'Shopee',
+    };
+
+    const orderedProviders = ['facebook', 'googleads', 'instagram', 'tiktok', 'line', 'partner', 'shopee', 'googleanalytics'];
+    const orderIndex = new Map<string, number>(orderedProviders.map((provider, idx) => [provider, idx]));
+
+    const raw = Array.from(connectedIntegrationProviders).map((provider) => labelByProvider[provider] ?? provider);
+    const deduped = Array.from(new Set(raw)).filter((label) => typeof label === 'string' && label.trim());
+
+    return deduped.sort((a, b) => {
+      const providerA = Object.keys(labelByProvider).find((key) => labelByProvider[key] === a) ?? a;
+      const providerB = Object.keys(labelByProvider).find((key) => labelByProvider[key] === b) ?? b;
+      const idxA = orderIndex.has(providerA) ? (orderIndex.get(providerA) as number) : Number.MAX_SAFE_INTEGER;
+      const idxB = orderIndex.has(providerB) ? (orderIndex.get(providerB) as number) : Number.MAX_SAFE_INTEGER;
+      if (idxA !== idxB) return idxA - idxB;
+      return a.localeCompare(b);
+    });
+  }, [connectedIntegrationProviders]);
 
   const completedSteps = integrationSteps.filter((step) => step.status === 'connected').length;
   const completionPercent = useMemo(() => {
@@ -4015,49 +5502,134 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   }, [completedSteps, integrationSteps.length]);
 
   const conversionConnectionStatus = useMemo(() => {
-    return integrationSteps.reduce<Record<string, 'connected' | 'disconnected'>>((acc, step) => {
-      acc[step.provider] = step.status;
-      return acc;
-    }, {});
-  }, [integrationSteps]);
+    const status: Record<string, 'connected' | 'disconnected'> = {};
 
-  const handleToggle = async (provider: string) => {
-    const integration = integrationMap[provider];
-    if (!integration) {
-      setIntegrationError('Integration record not found. Configure it first via Integrations > Add Integration.');
-      return;
-    }
-
-    try {
-      setActionTarget(provider);
-      await updateIntegration(integration.id, { isActive: !integration.isActive });
-      await loadIntegrations();
-    } catch (err: any) {
-      setIntegrationError(err?.response?.data?.message || 'Unable to update integration status');
-    } finally {
-      setActionTarget(null);
-    }
-  };
-
-  const handleConfigure = (provider: string, label: string) => {
-    const timestamp = new Date().toLocaleString();
-    setPlatformAlert({
-      title: `${label} integration is not ready yet`,
-      description:
-        'We are still preparing the API connection for this platform. Please verify access permissions and wait for the administrator to finish setup. You will receive an automatic alert here once it is ready.',
-      timestamp,
+    // Preserve keys from the checklist configuration for consistent downstream lookups
+    integrationSteps.forEach((step) => {
+      status[step.provider] = connectedIntegrationProviders.has(step.provider) ? 'connected' : 'disconnected';
     });
-  };
 
-  const productCategories = useMemo(() => {
-    const categories = Array.from(new Set(mockProductPerformance.map((product) => product.category)));
-    return ['All', ...categories];
-  }, []);
+    // Also mark any other connected providers (e.g. shopee, instagram, partner) if present
+    Array.from(connectedIntegrationProviders).forEach((provider) => {
+      status[provider] = 'connected';
+    });
 
-  const filteredProductPerformance = useMemo(() => {
-    if (productCategory === 'All') return mockProductPerformance;
-    return mockProductPerformance.filter((product) => product.category === productCategory);
-  }, [productCategory]);
+    return status;
+  }, [connectedIntegrationProviders, integrationSteps]);
+
+  const { data: overviewData, loading: overviewLoading } = useOverviewData(selectedRange, compareMode, conversionConnectionStatus);
+
+  const filteredConversionPlatforms = useMemo(() => {
+    return mockConversionPlatforms.filter((platform) => {
+      const provider = CONVERSION_PLATFORM_PROVIDERS[platform.platform];
+      if (!provider) {
+        return false;
+      }
+      return conversionConnectionStatus?.[provider] === 'connected';
+    });
+  }, [conversionConnectionStatus]);
+
+  const hasConnectedConversionPlatform = filteredConversionPlatforms.length > 0;
+
+  const handleToggle = useCallback(
+    async (provider: string) => {
+      const integration = integrationMap[provider];
+      if (!integration) {
+        setIntegrationError('Integration record not found. Configure it first via Integrations > Add Integration.');
+        return;
+      }
+
+      try {
+        setActionTarget(provider);
+        await updateIntegration(integration.id, { isActive: !integration.isActive });
+        await loadIntegrations();
+      } catch (err: unknown) {
+        const message = getAxiosLikeErrorMessage(err);
+        setIntegrationError((message && message.trim()) || 'Unable to update integration status');
+      } finally {
+        setActionTarget(null);
+      }
+    },
+    [integrationMap, loadIntegrations]
+  );
+
+  const handleConfigure = useCallback(
+    (provider: string, label: string) => {
+      const timestamp = new Date().toLocaleString();
+      const wasConnected = Boolean(mockIntegrationConnections?.[provider]);
+
+      setMockIntegrationConnections((prev) => {
+        const next = { ...(prev || {}) };
+        if (wasConnected) {
+          delete next[provider];
+        } else {
+          next[provider] = true;
+        }
+        try {
+          window.localStorage.setItem(MOCK_INTEGRATION_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+
+      setPlatformAlert({
+        title: wasConnected ? `${label} disconnected` : `${label} connected`,
+        description: wasConnected
+          ? 'Mock connection disabled. The Conversions Platform card will show as disconnected.'
+          : 'Mock connection enabled. The Conversions Platform card will show as connected.',
+        timestamp,
+      });
+    },
+    [mockIntegrationConnections]
+  );
+
+  const campaignMonitorRows = useMemo(() => {
+    const rawRows = Array.isArray(mockActiveCampaignMonitor) ? mockActiveCampaignMonitor : [];
+
+    const normalizePlatform = (value: unknown) =>
+      String(value ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+
+    const providerByPlatformLabel: Record<string, string> = {
+      facebook: 'facebook',
+      'google ads': 'googleads',
+      instagram: 'instagram',
+      tiktok: 'tiktok',
+      'tiktok ads': 'tiktok',
+      line: 'line',
+      'line oa': 'line',
+      partner: 'partner',
+      shopee: 'shopee',
+    };
+
+    const connected = connectedIntegrationProviders;
+
+    const filtered = connected.size
+      ? rawRows.filter((row: any) => {
+        const labelKey = normalizePlatform(row?.platform);
+        const provider = providerByPlatformLabel[labelKey] ?? labelKey;
+        return connected.has(provider);
+      })
+      : rawRows;
+
+    const rowsToUse = filtered.length ? filtered : rawRows;
+
+    return rowsToUse.map((row: any) => {
+      const conversions = Number(row.conversions ?? 0);
+      const budget = Number(row.budget ?? 0);
+      const cpaRaw = Number(row.cpa ?? (conversions > 0 ? budget / conversions : 0));
+      return {
+        campaignName: String(row.campaignName ?? ''),
+        platform: String(row.platform ?? ''),
+        conversions,
+        cpa: Math.round(cpaRaw * 100) / 100,
+        budget,
+      };
+    });
+  }, [connectedIntegrationProviders]);
 
   const [downloadModal, setDownloadModal] = useState<{ open: boolean; section: string | null }>({
     open: false,
@@ -4072,59 +5644,52 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setDownloadModal({ open: false, section: null });
   }, []);
 
-  const handleProductPerformanceDownload = useCallback(() => {
-    if (!filteredProductPerformance.length) {
+  const handleActiveCampaignMonitorDownload = useCallback(() => {
+    if (!campaignMonitorRows.length) {
       return;
     }
 
-    const headers = ['Product Name', 'Category', 'Sales', 'Revenue', 'Stock', 'Status'];
-    const escapeCsvValue = (value: string | number) => {
-      const str = String(value).replace(/"/g, '""');
-      return `"${str}"`;
-    };
+    const headers = ['Campaign Name', 'Platform', 'Conversions', 'CPA', 'Budget'];
 
-    const rows = filteredProductPerformance.map((product) => [
-      product.name,
-      product.category,
-      product.sales,
-      product.revenue,
-      product.stock,
-      product.status,
+    const rows = campaignMonitorRows.map((campaign) => [
+      campaign.campaignName,
+      campaign.platform,
+      campaign.conversions,
+      campaign.cpa,
+      campaign.budget,
     ]);
 
-    const csvContent = [headers, ...rows].map((row) => row.map(escapeCsvValue).join(',')).join('\n');
+    const csvContent = buildCsvContent(headers, rows);
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
 
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', 'product-performance.csv');
+    link.setAttribute('download', 'active-campaign-monitor.csv');
     document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
+    if (link.parentNode) {
+      link.parentNode.removeChild(link);
+    }
     URL.revokeObjectURL(url);
-  }, [filteredProductPerformance]);
+  }, [campaignMonitorRows]);
 
   const handleConversionsPlatformDownload = useCallback(() => {
-    if (!mockConversionPlatforms.length) {
+    if (!filteredConversionPlatforms.length) {
       return;
     }
 
     const headers = ['Platform', 'Conversions', 'Percentage'];
-    const escapeCsvValue = (value: string | number) => {
-      const str = String(value).replace(/"/g, '""');
-      return `"${str}"`;
-    };
 
-    const totalConversions = mockConversionPlatforms.reduce((sum, platform) => sum + platform.value, 0);
-    
-    const rows = mockConversionPlatforms.map((platform) => [
+    const totalConversions = filteredConversionPlatforms.reduce((sum, platform) => sum + platform.value, 0);
+
+    const rows = filteredConversionPlatforms.map((platform) => [
       platform.platform,
       platform.value,
       ((platform.value / totalConversions) * 100).toFixed(1) + '%',
     ]);
 
-    const csvContent = [headers, ...rows].map((row) => row.map(escapeCsvValue).join(',')).join('\n');
+    const csvContent = buildCsvContent(headers, rows);
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
 
@@ -4133,16 +5698,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     link.setAttribute('download', 'conversions-platform.csv');
     document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
+    if (link.parentNode) {
+      link.parentNode.removeChild(link);
+    }
     URL.revokeObjectURL(url);
-  }, []);
+  }, [filteredConversionPlatforms]);
 
   const downloadOptions = ['Image', 'PDF', 'CSV', 'DOC'];
 
   const handleDownloadOption = useCallback(
     (option: string) => {
-      if (option === 'CSV' && downloadModal.section === 'Product Performance') {
-        handleProductPerformanceDownload();
+      if (option === 'CSV' && downloadModal.section === 'Active Campaign Monitor') {
+        handleActiveCampaignMonitorDownload();
       } else if (option === 'CSV' && downloadModal.section === 'Conversions Platform') {
         handleConversionsPlatformDownload();
       } else {
@@ -4150,18 +5717,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       }
       closeDownloadModal();
     },
-    [closeDownloadModal, downloadModal.section, handleProductPerformanceDownload, handleConversionsPlatformDownload],
+    [closeDownloadModal, downloadModal.section, handleActiveCampaignMonitorDownload, handleConversionsPlatformDownload]
   );
 
   useEffect(() => {
-    const existing = document.querySelector('link[data-fontawesome="true"]') as HTMLLinkElement | null;
+    const existing = document.querySelector(FONT_AWESOME_LINK_SELECTOR) as HTMLLinkElement | null;
     if (existing) {
       return;
     }
 
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css';
+    link.href = FONT_AWESOME_LINK_HREF;
     link.crossOrigin = 'anonymous';
     link.referrerPolicy = 'no-referrer';
     link.dataset.fontawesome = 'true';
@@ -4177,12 +5744,42 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const scrollToSection = useCallback((ref: React.RefObject<HTMLDivElement>) => {
     const element = ref.current;
     if (element) {
-      const headerOffset = 90;
-      const viewportOffset = window.innerHeight * 0.3;
       const elementPosition = element.getBoundingClientRect().top + window.scrollY;
-      const offsetPosition = Math.max(elementPosition - headerOffset - viewportOffset, 0);
+      const offsetPosition = Math.max(elementPosition - DASHBOARD_HEADER_OFFSET_PX, 0);
       window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
     }
+  }, []);
+
+  const scrollRetryTimeoutRef = useRef<number | null>(null);
+
+  const scrollToSectionWhenReady = useCallback(
+    (ref: React.RefObject<HTMLDivElement>) => {
+      let attempts = 0;
+      const tick = () => {
+        if (ref.current) {
+          scrollToSection(ref);
+          return;
+        }
+
+        if (attempts >= DASHBOARD_SCROLL_RETRY_MAX_ATTEMPTS) {
+          return;
+        }
+
+        attempts += 1;
+        scrollRetryTimeoutRef.current = window.setTimeout(tick, DASHBOARD_SCROLL_RETRY_DELAY_MS);
+      };
+
+      tick();
+    },
+    [scrollToSection]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (scrollRetryTimeoutRef.current) {
+        window.clearTimeout(scrollRetryTimeoutRef.current);
+      }
+    };
   }, []);
 
   const handleSectionNav = useCallback(
@@ -4198,380 +5795,609 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   );
 
   useEffect(() => {
+    try {
+      const target = window.localStorage.getItem(DASHBOARD_SCROLL_TARGET_KEY);
+      if (target !== 'conversions-platform') {
+        return;
+      }
+      window.localStorage.removeItem(DASHBOARD_SCROLL_TARGET_KEY);
+      setPendingScroll({ section: 'overview', ref: overviewSectionRefs.conversionsPlatform });
+      setActiveSection('overview');
+    } catch {
+      // ignore
+    }
+  }, [overviewSectionRefs.conversionsPlatform]);
+
+  useEffect(() => {
     if (pendingScroll && activeSection === pendingScroll.section) {
-      scrollToSection(pendingScroll.ref);
+      scrollToSectionWhenReady(pendingScroll.ref);
       setPendingScroll(null);
     }
-  }, [pendingScroll, activeSection, scrollToSection]);
+  }, [pendingScroll, activeSection, scrollToSectionWhenReady]);
+
+  const makeSectionLink = useCallback(
+    (sectionKey: SectionKey, ref: React.RefObject<HTMLDivElement>, label: string) => {
+      return {
+        label,
+        onClick: () => handleSectionNav(sectionKey, ref),
+      };
+    },
+    [handleSectionNav]
+  );
 
   const overviewChildLinks = useMemo(
     () => [
-      {
-        label: 'Integration Checklist',
-        onClick: () => handleSectionNav('overview', overviewSectionRefs.integrations),
-      },
-      {
-        label: 'AI Summaries & Live KPIs',
-        onClick: () => handleSectionNav('overview', overviewSectionRefs.aiSummaries),
-      },
-      {
-        label: 'Performance Insights',
-        onClick: () => handleSectionNav('overview', overviewSectionRefs.performance),
-      },
+      makeSectionLink('overview', overviewSectionRefs.aiSummaries, 'AI Summaries & Live KPIs'),
+      makeSectionLink('overview', overviewSectionRefs.performance, 'Performance Insights'),
     ],
-    [handleSectionNav]
+    [makeSectionLink, overviewSectionRefs.aiSummaries, overviewSectionRefs.performance]
+  );
+
+  const settingsChildLinks = useMemo(
+    () => [
+      makeSectionLink('settings', settingsSectionRefs.integrations, 'Integration Checklist'),
+      makeSectionLink('settings', settingsSectionRefs.header, 'Settings'),
+    ],
+    [makeSectionLink, settingsSectionRefs.header, settingsSectionRefs.integrations]
   );
 
   const campaignChildLinks = useMemo(
     () => [
-      {
-        label: 'Campaign Performance',
-        onClick: () => handleSectionNav('campaign', campaignSectionRefs.performance),
-      },
-      {
-        label: 'Visualization Controls',
-        onClick: () => handleSectionNav('campaign', campaignSectionRefs.visualization),
-      },
+      makeSectionLink('campaign', campaignSectionRefs.performance, 'Campaign Performance'),
+      makeSectionLink('campaign', campaignSectionRefs.visualization, 'Visualization Controls'),
     ],
-    [handleSectionNav]
+    [campaignSectionRefs.performance, campaignSectionRefs.visualization, makeSectionLink]
   );
+
+  const seoChildLinks = useMemo(
+    () => [
+      makeSectionLink('seo', seoSectionRefs.overview, 'SEO & Web Analytics'),
+      makeSectionLink('seo', seoSectionRefs.regional, 'Regional SEO Performance'),
+      makeSectionLink('seo', seoSectionRefs.competitors, 'Top organic Competitors'),
+    ],
+    [makeSectionLink, seoSectionRefs.competitors, seoSectionRefs.overview, seoSectionRefs.regional]
+  );
+
+  const baseMenuItems = useMemo(
+    () => [
+      { label: 'Overview Dashboard', icon: <LayoutDashboard />, key: 'overview' as SectionKey, children: overviewChildLinks },
+      { label: 'Campaign Performance', icon: <BarChart3 />, key: 'campaign' as SectionKey, children: campaignChildLinks },
+      { label: 'SEO & Web Analytics', icon: <Search />, key: 'seo' as SectionKey, children: seoChildLinks },
+      { label: 'E-commerce Insights', icon: <ShoppingBag />, key: 'commerce' as SectionKey },
+      { label: 'CRM & Leads Insights', icon: <Users />, key: 'crm' as SectionKey },
+      { label: 'Trend Analysis', icon: <TrendingUp />, key: 'trend' as SectionKey },
+      { label: 'Settings', icon: <Settings />, key: 'settings' as SectionKey, children: settingsChildLinks },
+      { label: 'Reports & Automation', icon: <FileText />, key: 'reports' as SectionKey },
+    ],
+    [overviewChildLinks, campaignChildLinks, settingsChildLinks]
+  );
+
+  const setActiveSectionByKey = useCallback((key: SectionKey) => {
+    setActiveSection(key);
+  }, []);
 
   const menuItems = useMemo(
     () =>
-      [
-        { label: 'Overview Dashboard', icon: <LayoutDashboard />, key: 'overview' as SectionKey, children: overviewChildLinks },
-        { label: 'Campaign Performance', icon: <BarChart3 />, key: 'campaign' as SectionKey, children: campaignChildLinks },
-        { label: 'SEO & Web Analytics', icon: <Search />, key: 'seo' as SectionKey },
-        { label: 'E-commerce Insights', icon: <ShoppingBag />, key: 'commerce' as SectionKey },
-        { label: 'CRM & Leads Insights', icon: <Users />, key: 'crm' as SectionKey },
-        { label: 'Trend Analysis', icon: <TrendingUp />, key: 'trend' as SectionKey },
-        { label: 'Settings', icon: <Settings />, key: 'settings' as SectionKey },
-        { label: 'Reports & Automation', icon: <FileText />, key: 'reports' as SectionKey },
-      ].map((item) => ({
+      baseMenuItems.map((item) => ({
         ...item,
         active: item.key === activeSection,
-        onClick: () => setActiveSection(item.key),
+        onClick: () => setActiveSectionByKey(item.key),
       })),
-    [activeSection, overviewChildLinks, campaignChildLinks]
+    [activeSection, baseMenuItems, setActiveSectionByKey]
   );
 
-  const handleRefresh = () => {
+  const handleRefresh = useCallback(() => {
     refetchMetrics();
     refetchCampaigns();
-  };
+  }, [refetchCampaigns, refetchMetrics]);
 
   // Integration Checklist Widget Component
-  const IntegrationChecklistWidget: React.FC = () => (
-    <div ref={overviewSectionRefs.integrations} className={`${themePanelClass} shadow p-6 space-y-6`}>
-      <div className="flex flex-col gap-4">
-        <SectionTitle title="Integration Checklist" subtitle="Connect data sources for real-time insights" />
-
-        {/* Progress Summary */}
-        <div className="theme-panel-soft rounded-[26px] p-4 space-y-2 shadow-[0_10px_40px_-25px_rgba(249,115,22,0.8)]">
-          <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] font-semibold text-gray-900">
-            <div className="flex items-center gap-2">
-              <span className="h-2.5 w-2.5 rounded-full bg-orange-500 shadow-[0_0_0_4px_rgba(249,115,22,0.15)]" />
-              Connections in progress
-            </div>
+  const IntegrationChecklistWidget = useCallback(
+    ({ containerRef }: { containerRef?: React.RefObject<HTMLDivElement> }) => (
+      <div ref={containerRef ?? overviewSectionRefs.integrations} className={`${themePanelClass} shadow space-y-6 p-4`}>
+        <div className="flex flex-col gap-4">
+          <div className="flex items-start justify-between gap-4">
+            <SectionTitle title="Integration Checklist" subtitle="Connect data sources for real-time insights" />
             <button
               type="button"
-              className="text-[9px] font-semibold text-orange-500 hover:text-orange-600 transition-colors"
-              onClick={() => navigate('/integrations')}
+              className="rounded-full border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:border-gray-400 hover:bg-gray-50 transition-colors flex items-center gap-2 shrink-0"
+              onClick={() => {
+                setPendingScroll({ section: 'settings', ref: settingsSectionRefs.integrations });
+                setActiveSection('settings');
+              }}
             >
-              keep connection
+              <Settings className="h-4 w-4" />
+              Settings
             </button>
           </div>
-          <div className="relative h-4 rounded-full bg-gray-100/90 border border-white shadow-inner overflow-hidden">
-            <div
-              className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-orange-500 via-orange-400 to-amber-300 transition-all duration-500 ease-out"
-              style={{ width: `${Math.min(100, completionPercent)}%` }}
-            />
-            <span className="absolute inset-y-0 right-3 flex items-center text-[9px] font-semibold text-orange-600">
-              {completionPercent}%
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-[9px] text-gray-500">
-            <span className="font-semibold text-gray-800">
-              You&apos;re {completedSteps} out of {integrationSteps.length} steps complete
-            </span>
-            <span className="text-orange-500">•</span>
-            <span>Stay synced for accurate KPIs</span>
-          </div>
-        </div>
 
-        {/* Alerts Section */}
-        {platformAlert && (
-          <div className="rounded-2xl border border-orange-200 bg-orange-50 p-4">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 h-4 w-4 text-orange-500" />
-              <div>
-                <p className="text-sm font-semibold text-gray-900">{platformAlert.title}</p>
-                <p className="text-xs text-gray-600">{platformAlert.description}</p>
-                <p className="text-xs text-gray-400 mt-1">{platformAlert.timestamp}</p>
+          {/* Integration List */}
+          <div className="space-y-0">
+            {integrationLoading ? (
+              <div className="flex items-center justify-center py-8 text-gray-500">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                <span className="text-sm">Loading integrations...</span>
               </div>
-            </div>
-          </div>
-        )}
-
-        {/* Action Buttons */}
-        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-          <button
-            className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:border-gray-400 hover:bg-gray-50 transition-colors"
-            onClick={() => navigate('/integrations')}
-          >
-            Open workspace
-          </button>
-          <button
-            className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:border-gray-400 hover:bg-gray-50 transition-colors flex items-center gap-2"
-            onClick={loadIntegrations}
-            disabled={integrationLoading}
-          >
-            {integrationLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            Refresh
-          </button>
-          <button
-            className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:border-gray-400 hover:bg-gray-50 transition-colors"
-            onClick={() => navigate('/integrations')}
-          >
-            Configure
-          </button>
-          <button
-            className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:border-gray-400 hover:bg-gray-50 transition-colors open-data-btn"
-            onClick={() => navigate('/integrations')}
-          >
-            Open data setup
-          </button>
-        </div>
-
-        {/* Integration List */}
-        <div className="space-y-0">
-          {integrationLoading ? (
-            <div className="flex items-center justify-center py-8 text-gray-500">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              <span className="text-sm">Loading integrations...</span>
-            </div>
-          ) : (
-            integrationSteps.map((step) => (
-              <div
-                key={step.id}
-                className="theme-panel flex flex-col gap-1.5 rounded-2xl px-4 py-4 md:flex-row md:items-center md:justify-between hover:shadow-sm transition-shadow"
-              >
-                <div className="flex items-center gap-3">
-                  <div className={`${step.color} p-2 rounded-xl shadow-sm flex items-center justify-center`}>{step.icon}</div>
-                  <div>
-                    <p className="text-sm font-semibold text-gray-900 leading-[1.05] m-1">{step.label}</p>
-                    <p className="text-xs text-gray-500 leading-[1.05] m-1">{step.description}</p>
-                    {step.integration?.lastSyncAt && (
-                      <p className="text-xs text-gray-400 leading-[1.05] m-1">
-                        Last sync · {new Date(step.integration.lastSyncAt).toLocaleString()}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-col items-stretch gap-1 sm:flex-row sm:items-center sm:gap-2">
-                  <span
-                    className={`px-3 py-1 rounded-full text-xs font-medium text-center whitespace-nowrap min-w-[100px] border ${
-                      step.status === 'connected'
-                        ? 'border-emerald-200 text-emerald-700 bg-emerald-50'
-                        : 'border-gray-200 text-gray-500 bg-gray-50'
-                    }`}
-                  >
-                    {step.status === 'connected' ? 'Connected' : 'Disconnected'}
-                  </span>
-                  <div className="flex flex-col gap-1 sm:flex-row">
-                    {step.integration ? (
-                      <button
-                        className={`min-w-[120px] rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
-                          step.status === 'connected'
-                            ? 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
-                            : 'border-orange-200 text-orange-700 hover:bg-orange-50'
-                        }`}
-                        onClick={() => handleToggle(step.provider)}
-                        disabled={actionTarget === step.provider}
-                      >
-                        {actionTarget === step.provider ? (
-                          <Loader2 className="h-3 w-3 animate-spin mx-auto" />
-                        ) : step.status === 'connected' ? (
-                          'Disconnect'
-                        ) : (
-                          'Activate'
-                        )}
-                      </button>
-                    ) : (
-                      <button
-                        className="min-w-[120px] rounded-full border border-orange-200 px-3 py-1 text-xs font-semibold text-orange-700 hover:bg-orange-50 transition-colors"
-                        onClick={() => handleConfigure(step.provider, step.label)}
-                      >
-                        Configure
-                      </button>
-                    )}
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {integrationSteps.map((step) => {
+                  const connected = step.status === 'connected';
+                  const category = step.category || 'ADS';
+                  const accent = step.accent;
+                  const iconSlug = step.iconSlug;
+                  const isTikTok = step.provider === 'tiktok';
+                  const iconColorDark = step.iconColorDark;
+                  const iconColorLight = step.iconColorLight;
+                  const accentNoHash = (accent || '').replace('#', '');
+                  const fallbackIconColor = brandingTheme.mode === 'dark' ? 'FFFFFF' : '111827';
+                  const overrideIconColor = brandingTheme.mode === 'dark' ? iconColorDark : iconColorLight;
+                  const iconColor = overrideIconColor || accentNoHash || fallbackIconColor;
+                  const iconSrc = iconSlug ? `https://cdn.simpleicons.org/${iconSlug}/${iconColor}` : undefined;
+                  const connectedBackground = accent
+                    ? `linear-gradient(135deg, ${hexToRgba(accent, 0.40)}, ${hexToRgba(accent, 0.22)})`
+                    : undefined;
+                  return (
                     <button
-                      className="min-w-[120px] rounded-full border border-gray-200 px-3 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors dark-theme-hover open-data-btn"
-                      onClick={() => handleConfigure(step.provider, step.label)}
+                      key={step.id}
+                      type="button"
+                      disabled={actionTarget === step.provider}
+                      onClick={() => (step.integration ? handleToggle(step.provider) : handleConfigure(step.provider, step.label))}
+                      className={`w-full rounded-2xl px-5 py-4 text-left transition-all duration-200 theme-card hover:shadow-sm ${connected ? 'border-0' : ''
+                        } ${actionTarget === step.provider ? 'opacity-60 cursor-not-allowed' : 'hover:-translate-y-0.5'}`}
+                      style={
+                        connected
+                          ? {
+                            borderColor: 'transparent',
+                            background: connectedBackground,
+                          }
+                          : undefined
+                      }
                     >
-                      Open data setup
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-center gap-4 min-w-0">
+                          <div
+                            className="h-12 w-12 rounded-full flex items-center justify-center shrink-0 border"
+                            style={
+                              connected
+                                ? {
+                                  backgroundColor: isTikTok ? '#111827' : 'rgba(255,255,255,0.70)',
+                                  borderColor: isTikTok ? '#111827' : 'rgba(255,255,255,0.65)',
+                                }
+                                : {
+                                  backgroundColor: isTikTok ? '#111827' : 'rgba(0,0,0,0.02)',
+                                  borderColor: isTikTok ? '#111827' : 'var(--theme-border)',
+                                }
+                            }
+                          >
+                            {iconSrc ? <img src={iconSrc} className="h-7 w-7" alt={step.label} /> : null}
+                          </div>
+
+                          <div className="min-w-0">
+                            <p
+                              className={`text-[11px] font-semibold uppercase tracking-wide ${connected ? 'theme-muted' : 'theme-muted'
+                                }`}
+                            >
+                              {category}
+                            </p>
+                            <p className="mt-1 text-sm font-semibold leading-tight truncate theme-text">
+                              {step.label}
+                            </p>
+                          </div>
+                        </div>
+
+                        <span
+                          className="mt-1 h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: connected ? '#22c55e' : '#e5e7eb' }}
+                        />
+                      </div>
                     </button>
-                  </div>
-                </div>
+                  );
+                })}
               </div>
-            ))
-          )}
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    ),
+    [
+      actionTarget,
+      brandingTheme.mode,
+      handleConfigure,
+      handleToggle,
+      integrationLoading,
+      integrationSteps,
+      overviewSectionRefs.integrations,
+      settingsSectionRefs.integrations,
+    ]
   );
 
-  const sectionCtx = {
-    SectionTitle,
+  const IntegrationChecklistWidgetSettings = useCallback(
+    ({ containerRef }: { containerRef?: React.RefObject<HTMLDivElement> }) => (
+      <div ref={containerRef ?? settingsSectionRefs.integrations} className={`${themePanelClass} shadow p-6 space-y-6`}>
+        <div className="flex flex-col gap-4">
+          <SectionTitle title="Integration Checklist" subtitle="Connect data sources for real-time insights" />
 
-    themedSectionClass,
-    themePanelClass,
-    themePanelCompactClass,
+          <div className="theme-panel-soft rounded-[26px] p-4 space-y-2 shadow-[0_10px_40px_-25px_rgba(249,115,22,0.8)]">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] font-semibold text-gray-900">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-orange-500 shadow-[0_0_0_4px_rgba(249,115,22,0.15)]" />
+                Connections in progress
+              </div>
+              <button
+                type="button"
+                className="text-[9px] font-semibold text-orange-500 hover:text-orange-600 transition-colors"
+                onClick={() => navigate('/integrations')}
+              >
+                keep connection
+              </button>
+            </div>
+            <div className="relative h-4 rounded-full bg-gray-100/90 border border-white shadow-inner overflow-hidden">
+              <div
+                className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-orange-500 via-orange-400 to-amber-300 transition-all duration-500 ease-out"
+                style={{ width: `${Math.min(100, completionPercent)}%` }}
+              />
+              <span className="absolute inset-y-0 right-3 flex items-center text-[9px] font-semibold text-orange-600">
+                {completionPercent}%
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-[9px] text-gray-500">
+              <span className="font-semibold text-gray-800">
+                You&apos;re {completedSteps} out of {integrationSteps.length} steps complete
+              </span>
+              <span className="text-orange-500">•</span>
+              <span>Stay synced for accurate KPIs</span>
+            </div>
+          </div>
 
-    IntegrationChecklistWidget,
-    overviewSectionRefs,
-    currentRealtimeStats,
-    RealTimeCard,
-    compareMode,
-    setCompareMode,
-    selectedRange,
-    setSelectedRange,
-    selectedRealtimeId,
-    setSelectedRealtimeId,
-    openDownloadModal,
-    Download,
-    mockFinancialOverview,
-    DonutChart,
-    mockConversionFunnel,
-    FunnelVisualizer,
-    handleConversionsPlatformDownload,
-    productCategory,
-    setProductCategory,
-    productCategories,
-    filteredProductPerformance,
-    TrendingUp,
-    mockConversionPlatforms,
-    conversionConnectionStatus,
-    ConversionPlatformBars,
-    mockLtvTrend,
-    LtvComparisonChart,
-    ArrowUpRight,
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <button
+              className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:border-gray-400 hover:bg-gray-50 transition-colors flex items-center gap-2"
+              onClick={loadIntegrations}
+              disabled={integrationLoading}
+            >
+              {integrationLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Refresh
+            </button>
+          </div>
 
-    campaignSectionRefs,
-    handleRefresh,
-    RefreshCw,
-    Filter,
-    filterOptions,
-    campaignDateRange,
-    campaignFilterOpen,
-    setCampaignFilterOpen,
-    setCampaignDateRange,
-    CampaignSourceTabs,
-    mockCampaignSourceInsights,
-    brandingTheme,
+          <div className="space-y-0">
+            {integrationLoading ? (
+              <div className="flex items-center justify-center py-8 text-gray-500">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                <span className="text-sm">Loading integrations...</span>
+              </div>
+            ) : (
+              integrationSteps.map((step) => (
+                <div
+                  key={step.id}
+                  className="theme-panel flex flex-col gap-1.5 rounded-2xl px-4 py-4 md:flex-row md:items-center md:justify-between hover:shadow-sm transition-shadow"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`${step.color} p-2 rounded-xl shadow-sm flex items-center justify-center`}>
+                      <img
+                        src={step.iconSlug ? `https://cdn.simpleicons.org/${step.iconSlug}/FFFFFF` : ''}
+                        className="h-7 w-7"
+                        alt={step.label}
+                      />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-gray-900 leading-[1.05] m-1">{step.label}</p>
+                      <p className="text-xs text-gray-500 leading-[1.05] m-1">{step.description}</p>
+                      {step.integration?.lastSyncAt && (
+                        <p className="text-xs text-gray-400 leading-[1.05] m-1">
+                          Last sync · {new Date(step.integration.lastSyncAt).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
+                  </div>
 
-    seoDateRange,
-    seoFilterOpen,
-    setSeoFilterOpen,
-    setSeoDateRange,
-    mockSeoRealtimeStats,
-    SeoAuthorityCard,
-    SeoOrganicSummaryCard,
-    SearchVisibilityCard,
-    mockSeoSnapshots,
-    SeoConversionCard,
-    mockSeoConversionSummary,
-    SeoIssuesCard,
-    mockSeoIssues,
-    SeoKeywordsTable,
-    mockSeoKeywordsDetailed,
-    SeoCompetitorsCard,
-    mockSeoCompetitors,
-    SeoPositionDistributionCard,
-    mockSeoPositionDistribution,
-    SeoBacklinkSummaryCard,
-    SeoCompetitiveMapCard,
-    mockSeoCompetitiveMap,
-    SeoRegionalPerformanceCard,
-    TechnicalScoreList,
-    mockSeoTechnicalScores,
-    SeoChannelMix,
-    SeoRightRailCard,
+                  <div className="flex flex-col items-stretch gap-1 sm:flex-row sm:items-center sm:gap-2">
+                    <span
+                      className={`px-3 py-1 rounded-full text-xs font-medium text-center whitespace-nowrap min-w-[100px] border ${step.status === 'connected'
+                        ? 'border-emerald-200 text-emerald-700 bg-emerald-50'
+                        : 'border-gray-200 text-gray-500 bg-gray-50'
+                        }`}
+                    >
+                      {step.status === 'connected' ? 'Connected' : 'Disconnected'}
+                    </span>
+                    <div className="flex flex-col gap-1 sm:flex-row">
+                      {step.integration ? (
+                        <button
+                          className={`disconnect-btn min-w-[120px] rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${step.status === 'connected'
+                            ? 'border-orange-200 text-orange-700 hover:bg-orange-50'
+                            : 'border-orange-200 text-orange-700 hover:bg-orange-50'
+                            }`}
+                          onClick={() => handleToggle(step.provider)}
+                          disabled={actionTarget === step.provider}
+                        >
+                          {actionTarget === step.provider ? (
+                            <Loader2 className="h-3 w-3 animate-spin mx-auto" />
+                          ) : step.status === 'connected' ? (
+                            'Disconnect'
+                          ) : (
+                            'Activate'
+                          )}
+                        </button>
+                      ) : (
+                        <button
+                          className={`disconnect-btn min-w-[120px] rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${step.status === 'connected'
+                            ? 'border-orange-200 text-orange-700 hover:bg-orange-50'
+                            : 'border-orange-200 text-orange-700 hover:bg-orange-50'
+                            }`}
+                          onClick={() => handleConfigure(step.provider, step.label)}
+                        >
+                          {step.status === 'connected' ? 'Disconnect' : 'Configure'}
+                        </button>
+                      )}
+                      <button
+                        className="min-w-[120px] rounded-full border border-gray-200 px-3 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors dark-theme-hover open-data-btn"
+                        onClick={() => handleConfigure(step.provider, step.label)}
+                      >
+                        {step.status === 'connected' ? 'Disconnect' : 'Open data setup'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    ),
+    [
+      actionTarget,
+      completionPercent,
+      completedSteps,
+      handleConfigure,
+      handleToggle,
+      integrationLoading,
+      integrationSteps,
+      loadIntegrations,
+      navigate,
+      settingsSectionRefs.integrations,
+    ]
+  );
 
-    mockCommerceRealtime,
-    ProfitabilityChart,
-    mockCommerceProfitability,
-    CommerceFunnelChart,
-    mockCommerceConversionFunnel,
-    RevenueOrdersTrendChart,
-    mockCommerceRevenueTrend,
-    mockProductPerformance,
-    mockCommerceCreatives,
-    mockCommerceProductVideos,
+  const ConnectionsInProgressWidget = useCallback(
+    () => (
+      <div className={`${themePanelClass} shadow p-6 space-y-6`}>
+        <div className="flex flex-col gap-4">
+          <SectionTitle title="Integration Checklist" subtitle="Connect data sources for real-time insights" />
 
-    mockCrmRealtime,
-    CrmStageChart,
-    mockCrmStages,
-    CrmAgeDonut,
-    mockCrmAgeRange,
-    LeadTrackingTable,
-    mockCrmLeads,
-
-    mockTrendRealtime,
-    ChannelComparisonChart,
-    mockTrendRevenueByChannel,
-    SalesFunnelChart,
-    mockTrendSalesFunnel,
-    RevenueTrendChart,
-    mockTrendRevenueTrend,
-    YtdRevenueCard,
-    LeadSourceTable,
-    mockTrendLeadSources,
-    SalesRepTable,
-    mockTrendSalesReps,
-
-    KpiSettingsTable,
-    settingsData,
-    settingsLoading,
-    handleUpdateKpi,
-    handleAddKpi,
-    handleRemoveKpi,
-    ThemeBrandingCard,
-    applyTheme,
-    handleMenuChange,
-    handleResetBranding,
-    DataRefreshCard,
-    handleRefreshChange,
-    UserRolesCard,
-    AlertSettingsCard,
-    handleAlertToggle,
-    handleAlertAddRecipient,
-    handleAlertRemoveRecipient,
-
-    mockReportBuilders,
-    ScheduleReportCard,
-    ReportStatusTable,
-  };
+          <div className="theme-panel-soft rounded-[26px] p-4 space-y-2 shadow-[0_10px_40px_-25px_rgba(249,115,22,0.8)]">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] font-semibold text-gray-900">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-orange-500 shadow-[0_0_0_4px_rgba(249,115,22,0.15)]" />
+                Connections in progress
+              </div>
+              <button
+                type="button"
+                className="text-[9px] font-semibold text-orange-500 hover:text-orange-600 transition-colors"
+                onClick={() => navigate('/integrations')}
+              >
+                keep connection
+              </button>
+            </div>
+            <div className="relative h-4 rounded-full bg-gray-100/90 border border-white shadow-inner overflow-hidden">
+              <div
+                className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-orange-500 via-orange-400 to-amber-300 transition-all duration-500 ease-out"
+                style={{ width: `${Math.min(100, completionPercent)}%` }}
+              />
+              <span className="absolute inset-y-0 right-3 flex items-center text-[9px] font-semibold text-orange-600">
+                {completionPercent}%
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-[9px] text-gray-500">
+              <span className="font-semibold text-gray-800">
+                You&apos;re {completedSteps} out of {integrationSteps.length} steps complete
+              </span>
+              <span className="text-orange-500">•</span>
+              <span>Stay synced for accurate KPIs</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    ),
+    [navigate, completionPercent, completedSteps, integrationSteps.length]
+  );
 
   const renderSection = () => {
     switch (activeSection) {
       case 'overview':
-        return renderOverviewSection(sectionCtx);
+        return (
+          <OverviewSection
+            // Logic Props
+            data={overviewData}
+            loading={overviewLoading}
+
+            // UI/Theme Props
+            themePanelClass={themePanelClass}
+            themePanelCompactClass={themePanelCompactClass}
+            overviewSectionRefs={overviewSectionRefs}
+
+            // Components
+            IntegrationChecklistWidget={IntegrationChecklistWidget}
+            ConnectionsInProgressWidget={ConnectionsInProgressWidget}
+            RealTimeCard={RealTimeCardWithRealtime}
+            DonutChart={DonutChart}
+            FunnelVisualizer={FunnelVisualizer}
+            ConversionPlatformBars={ConversionPlatformBars}
+            LtvComparisonChart={LtvComparisonChart}
+
+            // Interaction Handlers
+            compareMode={compareMode}
+            selectedRealtimeId={selectedRealtimeId}
+            setSelectedRealtimeId={setSelectedRealtimeId}
+            openDownloadModal={openDownloadModal}
+            handleConversionsPlatformDownload={handleConversionsPlatformDownload}
+            handleActiveCampaignMonitorDownload={handleActiveCampaignMonitorDownload}
+
+            // Legacy/Compatibility props
+            conversionConnectionStatus={conversionConnectionStatus}
+            hasConnectedConversionPlatform={hasConnectedConversionPlatform}
+          />
+        );
       case 'commerce':
-        return renderCommerceSection(sectionCtx);
+        return (
+          <CommerceSection
+            themedSectionClass={themedSectionClass}
+            themePanelClass={themePanelClass}
+            mockCommerceRealtime={mockCommerceRealtime}
+            RealTimeCard={RealTimeCardWithRealtime}
+            ProfitabilityChart={ProfitabilityChart}
+            mockCommerceProfitability={mockCommerceProfitability}
+            CommerceFunnelChart={CommerceFunnelChart}
+            mockCommerceConversionFunnel={mockCommerceConversionFunnel}
+            RevenueOrdersTrendChart={RevenueOrdersTrendChart}
+            mockCommerceRevenueTrend={mockCommerceRevenueTrend}
+            mockProductPerformance={mockProductPerformance}
+            mockCommerceCreatives={mockCommerceCreatives}
+            mockCommerceProductVideos={mockCommerceProductVideos}
+          />
+        );
       case 'campaign':
-        return renderCampaignSection(sectionCtx);
+        return (
+          <CampaignSection
+            campaignSectionRefs={campaignSectionRefs}
+            themePanelClass={themePanelClass}
+            RealTimeCard={RealTimeCardWithRealtime}
+            realtimeModeEnabled={realtimeModeEnabled}
+            handleRefresh={handleRefresh}
+            filterOptions={filterOptions}
+            campaignDateRange={campaignDateRange}
+            campaignFilterOpen={campaignFilterOpen}
+            setCampaignFilterOpen={setCampaignFilterOpen}
+            setCampaignDateRange={(value) => setCampaignDateRange(value as DateRangeKey)}
+            CampaignSourceTabs={CampaignSourceTabs}
+            mockCampaignSourceInsights={mockCampaignSourceInsights}
+            conversionConnectionStatus={conversionConnectionStatus}
+            brandingTheme={brandingTheme}
+            openDownloadModal={openDownloadModal}
+          />
+        );
       case 'crm':
-        return renderCrmSection(sectionCtx);
+        return (
+          <CrmSection
+            themedSectionClass={themedSectionClass}
+            themePanelClass={themePanelClass}
+            mockCrmRealtime={mockCrmRealtime}
+            RealTimeCard={RealTimeCardWithRealtime}
+            CrmStageChart={CrmStageChart}
+            mockCrmStages={mockCrmStages}
+            CrmAgeDonut={CrmAgeDonut}
+            mockCrmAgeRange={mockCrmAgeRange}
+            LeadTrackingTable={LeadTrackingTable}
+            mockCrmLeads={mockCrmLeads}
+          />
+        );
       case 'trend':
-        return renderTrendSection(sectionCtx);
+        return (
+          <TrendSection
+            themedSectionClass={themedSectionClass}
+            themePanelClass={themePanelClass}
+            mockTrendRealtime={mockTrendRealtime}
+            RealTimeCard={RealTimeCardWithRealtime}
+            ChannelComparisonChart={ChannelComparisonChart}
+            mockTrendRevenueByChannel={mockTrendRevenueByChannel}
+            SalesFunnelChart={SalesFunnelChart}
+            mockTrendSalesFunnel={mockTrendSalesFunnel}
+            RevenueTrendChart={RevenueTrendChart}
+            mockTrendRevenueTrend={mockTrendRevenueTrend}
+            YtdRevenueCard={YtdRevenueCard}
+            LeadSourceTable={LeadSourceTable}
+            mockTrendLeadSources={mockTrendLeadSources}
+            SalesRepTable={SalesRepTable}
+            mockTrendSalesReps={mockTrendSalesReps}
+          />
+        );
       case 'seo':
-        return renderSeoSection(sectionCtx);
+        return (
+          <SeoSection
+            themeMode={brandingTheme.mode}
+            seoSectionRefs={seoSectionRefs}
+            themedSectionClass={themedSectionClass}
+            themePanelClass={themePanelClass}
+            filterOptions={filterOptions}
+            seoDateRange={seoDateRange}
+            handleRefresh={handleRefresh}
+            seoFilterOpen={seoFilterOpen}
+            setSeoFilterOpen={setSeoFilterOpen}
+            setSeoDateRange={(value) => setSeoDateRange(value as DateRangeKey)}
+            openDownloadModal={openDownloadModal}
+            mockSeoRealtimeStats={mockSeoRealtimeStats}
+            RealTimeCard={RealTimeCardWithRealtime}
+            SeoAuthorityCard={SeoAuthorityCard}
+            SeoOrganicSummaryCard={SeoOrganicSummaryCard}
+            SearchVisibilityCard={SearchVisibilityCard}
+            mockSeoSnapshots={mockSeoSnapshots}
+            SeoConversionCard={SeoConversionCard}
+            mockSeoConversionSummary={mockSeoConversionSummary}
+            SeoIssuesCard={SeoIssuesCard}
+            mockSeoIssues={mockSeoIssues}
+            SeoKeywordsTable={SeoKeywordsTable}
+            mockSeoKeywordsDetailed={mockSeoKeywordsDetailed}
+            SeoCompetitorsCard={SeoCompetitorsCard}
+            mockSeoCompetitors={mockSeoCompetitors}
+            SeoPositionDistributionCard={SeoPositionDistributionCard}
+            mockSeoPositionDistribution={mockSeoPositionDistribution}
+            SeoBacklinkSummaryCard={SeoBacklinkSummaryCard}
+            SeoCompetitiveMapCard={SeoCompetitiveMapCard}
+            mockSeoCompetitiveMap={mockSeoCompetitiveMap}
+            SeoRegionalPerformanceCard={SeoRegionalPerformanceCard}
+            mockSeoRegionalPerformance={mockSeoRegionalPerformance}
+            TechnicalScoreList={TechnicalScoreList}
+            mockSeoTechnicalScores={mockSeoTechnicalScores}
+            SeoChannelMix={SeoChannelMix}
+            SeoRightRailCard={SeoRightRailCard}
+            mockSeoAuthorityScores={mockSeoAuthorityScores}
+            mockSeoBacklinkHighlights={mockSeoBacklinkHighlights}
+            mockSeoOrganicSearch={mockSeoOrganicSearch}
+            mockSeoAnchors={mockSeoAnchors}
+            mockSeoReferringDomains={mockSeoReferringDomains}
+            mockSeoRightRailStats={mockSeoRightRailStats}
+            mockSeoUrlRatings={mockSeoUrlRatings}
+          />
+        );
       case 'settings':
-        return renderSettingsSection(sectionCtx);
+        return (
+          <SettingsSection
+            themePanelClass={themePanelClass}
+            IntegrationChecklistWidgetSettings={IntegrationChecklistWidgetSettings}
+            settingsSectionRefs={settingsSectionRefs}
+            KpiSettingsTable={KpiSettingsTable}
+            settingsData={settingsData}
+            settingsLoading={settingsLoading}
+            handleUpdateKpi={handleUpdateKpi}
+            handleAddKpi={handleAddKpi}
+            handleRemoveKpi={handleRemoveKpi}
+            platformOptions={platformOptions}
+            ThemeBrandingCard={ThemeBrandingCard}
+            applyTheme={applyTheme}
+            handleMenuChange={handleMenuChange}
+            handleResetBranding={handleResetBranding}
+            DataRefreshCard={DataRefreshCard}
+            handleRefreshChange={handleRefreshChange}
+            handleRefresh={handleRefresh}
+            UserRolesCard={UserRolesCard}
+            AlertSettingsCard={AlertSettingsCard}
+            brandingTheme={brandingTheme}
+            handleAlertToggle={handleAlertToggle}
+            handleAlertAddRecipient={handleAlertAddRecipient}
+            handleAlertRemoveRecipient={handleAlertRemoveRecipient}
+            defaultRecipientEmail={defaultRecipientEmail}
+          />
+        );
       case 'reports':
-        return renderReportsSection(sectionCtx);
+        return (
+          <ReportsSection
+            themedSectionClass={themedSectionClass}
+            mockReportBuilders={mockReportBuilders}
+            ScheduleReportCard={ScheduleReportCard}
+            ReportStatusTable={ReportStatusTable}
+            settingsData={settingsData}
+            platformOptions={platformOptions}
+          />
+        );
       default:
         return null;
     }
@@ -4639,7 +6465,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                       <button
                         key={option.key}
                         onClick={() => {
-                          setGlobalDateRange(option.key as any);
+                          setGlobalDateRange(option.key);
                           setGlobalFilterOpen(false);
                         }}
                         className="w-full text-left px-3 py-2 rounded-xl text-sm font-medium transition-colors theme-text"
@@ -4698,13 +6524,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                           onClick={(event) => {
                             const input = event.currentTarget.previousElementSibling as HTMLInputElement | null;
                             if (input) {
-                              const anyInput = input as any;
-                              if (typeof anyInput.showPicker === 'function') {
-                                anyInput.showPicker();
-                              } else {
-                                input.focus();
-                                input.click();
+                              const picker = (input as HTMLInputElement & { showPicker?: () => void }).showPicker;
+                              if (typeof picker === 'function') {
+                                picker();
+                                return;
                               }
+                              input.focus();
+                              input.click();
                             }
                           }}
                         />
@@ -4732,13 +6558,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                           onClick={(event) => {
                             const input = event.currentTarget.previousElementSibling as HTMLInputElement | null;
                             if (input) {
-                              const anyInput = input as any;
-                              if (typeof anyInput.showPicker === 'function') {
-                                anyInput.showPicker();
-                              } else {
-                                input.focus();
-                                input.click();
+                              const picker = (input as HTMLInputElement & { showPicker?: () => void }).showPicker;
+                              if (typeof picker === 'function') {
+                                picker();
+                                return;
                               }
+                              input.focus();
+                              input.click();
                             }
                           }}
                         />
@@ -4783,39 +6609,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         {renderSection()}
       </DashboardShell>
       <AI />
-      {downloadModal.open && (
-        <div
-          className="fixed inset-0 z-[120] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={closeDownloadModal}
-        >
-          <div
-            className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 space-y-5 text-center"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="space-y-1">
-              <p className="text-[24px] font-semibold text-gray-900">Download options</p>
-              <p className="text-[18px] text-gray-500">{downloadModal.section}</p>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              {downloadOptions.map((option) => (
-                <button
-                  key={option}
-                  className="rounded-2xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-900 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
-                  onClick={() => handleDownloadOption(option)}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
-            <button
-              className="w-full rounded-2xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors"
-              onClick={closeDownloadModal}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
+      <DownloadOptionsModal
+        open={downloadModal.open}
+        section={downloadModal.section}
+        options={downloadOptions}
+        onClose={closeDownloadModal}
+        onSelectOption={handleDownloadOption}
+      />
     </>
   );
 };

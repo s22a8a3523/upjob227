@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { Bot, ExternalLink, Send } from 'lucide-react';
 import api from '../services/api';
 
@@ -37,99 +37,6 @@ const AI: React.FC = () => {
       throw new Error(message);
     }
   };
-
-  const fabRef = useRef<HTMLDivElement | null>(null);
-  const [fabPosition, setFabPosition] = useState({ x: 0, y: 0 });
-  const dragState = useRef<null | {
-    startMouseX: number;
-    startMouseY: number;
-    startX: number;
-    startY: number;
-    startRect: { left: number; top: number; right: number; bottom: number };
-    boundaryRect: { left: number; top: number; right: number; bottom: number };
-    toggleOnClick: boolean;
-    didMove: boolean;
-  }>(null);
-  const [isDragging, setIsDragging] = useState(false);
-
-  const handleDragMouseDown = (event: React.MouseEvent<HTMLElement>, toggleOnClick: boolean) => {
-    event.preventDefault();
-    const currentRect = fabRef.current?.getBoundingClientRect();
-    if (!currentRect) return;
-
-    const boundaryEl = document.querySelector('main');
-    const boundaryRect = boundaryEl?.getBoundingClientRect() || {
-      left: 0,
-      top: 0,
-      right: window.innerWidth,
-      bottom: window.innerHeight,
-    };
-
-    dragState.current = {
-      startMouseX: event.clientX,
-      startMouseY: event.clientY,
-      startX: fabPosition.x,
-      startY: fabPosition.y,
-      startRect: {
-        left: currentRect.left,
-        top: currentRect.top,
-        right: currentRect.right,
-        bottom: currentRect.bottom,
-      },
-      boundaryRect: {
-        left: boundaryRect.left,
-        top: boundaryRect.top,
-        right: boundaryRect.right,
-        bottom: boundaryRect.bottom,
-      },
-      toggleOnClick,
-      didMove: false,
-    };
-
-    setIsDragging(true);
-  };
-
-  useEffect(() => {
-    if (!isDragging) return;
-
-    const handleMouseMove = (event: MouseEvent) => {
-      if (!dragState.current) return;
-      const dx = event.clientX - dragState.current.startMouseX;
-      const dy = event.clientY - dragState.current.startMouseY;
-
-      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-        dragState.current.didMove = true;
-      }
-
-      let clampedDx = dx;
-      let clampedDy = dy;
-      const startRect = dragState.current.startRect;
-      const boundary = dragState.current.boundaryRect;
-
-      if (startRect.left + clampedDx < boundary.left) clampedDx = boundary.left - startRect.left;
-      if (startRect.right + clampedDx > boundary.right) clampedDx = boundary.right - startRect.right;
-      if (startRect.top + clampedDy < boundary.top) clampedDy = boundary.top - startRect.top;
-      if (startRect.bottom + clampedDy > boundary.bottom) clampedDy = boundary.bottom - startRect.bottom;
-
-      setFabPosition({ x: dragState.current.startX + clampedDx, y: dragState.current.startY + clampedDy });
-    };
-
-    const handleMouseUp = () => {
-      if (dragState.current?.toggleOnClick && !dragState.current?.didMove) {
-        setIsOpen((prev) => !prev);
-      }
-      setIsDragging(false);
-      dragState.current = null;
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging]);
 
   const handleSend = (event: React.FormEvent) => {
     event.preventDefault();
@@ -171,19 +78,15 @@ const AI: React.FC = () => {
   return (
     <div
       className="fixed z-[140] flex flex-col items-end gap-2"
-      ref={fabRef}
       style={{
         bottom: '3.5rem',
         right: '2rem',
-        transform: `translate(${fabPosition.x}px, ${fabPosition.y}px)`,
-        transition: isDragging ? 'none' : 'transform 0.2s ease-out',
       }}
     >
       {isOpen && (
         <div className="mb-2 w-[320px] max-w-[95vw] h-[450px] rounded-2xl border border-[#3f3f3f] bg-[#d4d4d4] shadow-2xl overflow-hidden flex flex-col">
           <div
             className="flex items-center justify-between px-4 py-3 bg-[#5b5b5b] text-white cursor-move select-none"
-            onMouseDown={(event) => handleDragMouseDown(event, false)}
           >
             <div className="flex items-center gap-3">
               <span className="flex h-9 w-9 items-center justify-center rounded-full bg-white">
@@ -265,10 +168,10 @@ const AI: React.FC = () => {
       )}
       <button
         type="button"
-        onMouseDown={(event) => handleDragMouseDown(event, true)}
-        className="group relative flex items-center justify-center h-12 w-12 rounded-full shadow-lg bg-white border border-gray-300 cursor-grab hover:-translate-y-0.5 transition-transform"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="group relative flex items-center justify-center h-12 w-12 rounded-full shadow-lg bg-white border border-gray-300 transition-all duration-200 cursor-pointer hover:-translate-y-0.5 hover:shadow-2xl hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-[#147efb]/40"
       >
-        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#147efb] text-white text-xs font-semibold">AI</span>
+        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#147efb] text-white text-xs font-semibold transition-transform duration-200 group-hover:scale-105">AI</span>
       </button>
     </div>
   );

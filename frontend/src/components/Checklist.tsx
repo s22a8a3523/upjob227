@@ -15,6 +15,9 @@ interface PlatformConfig {
   description: string
 }
 
+const MOCK_INTEGRATION_STORAGE_KEY = 'mockIntegrationConnections'
+const DASHBOARD_SCROLL_TARGET_KEY = 'rga_scroll_target'
+
 const REQUIRED_PLATFORMS: PlatformConfig[] = [
   {
     id: 'googleads',
@@ -58,6 +61,15 @@ const Checklist: React.FC = () => {
   const [actionTarget, setActionTarget] = useState<string | null>(null)
   const { notifications, loading: loadingNotifications, error: notificationError, refetch } = useIntegrationNotifications('open')
   const [platformAlert, setPlatformAlert] = useState<{ title: string; description: string; timestamp: string } | null>(null)
+  const [mockIntegrationConnections, setMockIntegrationConnections] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = window.localStorage.getItem(MOCK_INTEGRATION_STORAGE_KEY)
+      const parsed = raw ? JSON.parse(raw) : null
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, boolean>) : {}
+    } catch {
+      return {}
+    }
+  })
 
   const loadIntegrations = useCallback(async () => {
     try {
@@ -75,7 +87,7 @@ const Checklist: React.FC = () => {
   useEffect(() => {
     loadIntegrations()
     refetch()
-  }, [loadIntegrations])
+  }, [loadIntegrations, refetch])
 
   const integrationMap = useMemo(() => {
     return integrations.reduce<Record<string, Integration>>((acc, integration) => {
@@ -87,14 +99,14 @@ const Checklist: React.FC = () => {
   const steps = useMemo(() => {
     return REQUIRED_PLATFORMS.map((platform) => {
       const integration = integrationMap[platform.provider]
-      const isConnected = Boolean(integration?.isActive)
+      const isConnected = Boolean(integration?.isActive) || Boolean(mockIntegrationConnections?.[platform.provider])
       return {
         ...platform,
         status: isConnected ? 'connected' : 'disconnected',
         integration,
       }
     })
-  }, [integrationMap])
+  }, [integrationMap, mockIntegrationConnections])
 
   const completedSteps = steps.filter((step) => step.status === 'connected').length
   const completionPercent = useMemo(() => {
@@ -122,12 +134,35 @@ const Checklist: React.FC = () => {
 
   const handleConfigure = (provider: string, label: string) => {
     const timestamp = new Date().toLocaleString()
+    const wasConnected = Boolean(mockIntegrationConnections?.[provider])
+    setMockIntegrationConnections((prev) => {
+      const next = { ...(prev || {}) }
+      if (wasConnected) {
+        delete next[provider]
+      } else {
+        next[provider] = true
+      }
+      try {
+        window.localStorage.setItem(MOCK_INTEGRATION_STORAGE_KEY, JSON.stringify(next))
+      } catch {
+        // ignore
+      }
+      return next
+    })
+    try {
+      window.localStorage.setItem(DASHBOARD_SCROLL_TARGET_KEY, 'conversions-platform')
+    } catch {
+      // ignore
+    }
     setPlatformAlert({
-      title: `${label} integration is not ready yet`,
-      description:
-        'We are still preparing the API connection for this platform. Please verify access permissions and wait for the administrator to finish setup. You will receive an automatic alert here once it is ready.',
+      title: wasConnected ? `${label} disconnected` : `${label} connected`,
+      description: wasConnected
+        ? 'Mock connection disabled. Redirecting you to Conversions Platform…'
+        : 'Mock connection enabled. Redirecting you to Conversions Platform…',
       timestamp,
     })
+
+    navigate('/dashboard')
   }
 
   const handleResetAll = async () => {

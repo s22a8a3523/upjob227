@@ -1,5 +1,23 @@
-export const renderReportsSection = (ctx: any) => {
-  const { themedSectionClass, SectionTitle, mockReportBuilders, ScheduleReportCard, ReportStatusTable } = ctx;
+import React from 'react';
+import SectionTitle from '../SectionTitle';
+
+export type ReportsSectionProps = {
+  themedSectionClass: string;
+  mockReportBuilders: any;
+  ScheduleReportCard: React.ComponentType<any>;
+  ReportStatusTable: React.ComponentType<any>;
+  settingsData: any;
+  platformOptions: string[];
+};
+
+const ReportsSection: React.FC<ReportsSectionProps> = ({
+  themedSectionClass,
+  mockReportBuilders,
+  ScheduleReportCard,
+  ReportStatusTable,
+  settingsData,
+  platformOptions,
+}) => {
 
   return (
     <div className="space-y-8">
@@ -8,7 +26,11 @@ export const renderReportsSection = (ctx: any) => {
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-stretch">
           <div className="xl:col-span-1">
-            <ScheduleReportCard schedule={mockReportBuilders.schedule} />
+            <ScheduleReportCard
+              schedule={mockReportBuilders.schedule}
+              recipientOptions={settingsData?.alerts?.recipients || []}
+              platformOptions={platformOptions}
+            />
           </div>
           <div className="xl:col-span-2">
             <ReportStatusTable />
@@ -18,3 +40,5 @@ export const renderReportsSection = (ctx: any) => {
     </div>
   );
 };
+
+export default ReportsSection;

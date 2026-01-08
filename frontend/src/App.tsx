@@ -12,6 +12,7 @@ import { PrivacyPolicy } from './components/legal/PrivacyPolicy';
 import { Dashboard } from './components/Dashboard';
 import ProfilePage from './components/ProfilePage';
 import Checklist from './components/Checklist';
+import IntegrationManager from './components/IntegrationManager';
 import ProductPerformanceDetails from './components/ProductPerformanceDetails';
 
 const App: React.FC = () => {
@@ -78,6 +79,9 @@ const App: React.FC = () => {
         } />
         <Route path="/dashboard" element={
           isAuthenticated ? <Dashboard onLogout={handleLogout} /> : <Navigate to="/login" replace />
+        } />
+        <Route path="/integrations" element={
+          isAuthenticated ? <IntegrationManager /> : <Navigate to="/login" replace />
         } />
         <Route path="/profile" element={
           isAuthenticated ? <ProfilePage /> : <Navigate to="/login" replace />

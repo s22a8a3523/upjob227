@@ -1,20 +1,37 @@
-export const renderCommerceSection = (ctx: any) => {
-  const {
-    themedSectionClass,
-    themePanelClass,
-    SectionTitle,
-    mockCommerceRealtime,
-    RealTimeCard,
-    ProfitabilityChart,
-    mockCommerceProfitability,
-    CommerceFunnelChart,
-    mockCommerceConversionFunnel,
-    RevenueOrdersTrendChart,
-    mockCommerceRevenueTrend,
-    mockProductPerformance,
-    mockCommerceCreatives,
-    mockCommerceProductVideos,
-  } = ctx;
+import React from 'react';
+import SectionTitle from '../SectionTitle';
+
+export type CommerceSectionProps = {
+  themedSectionClass: string;
+  themePanelClass: string;
+  mockCommerceRealtime: any[];
+  RealTimeCard: React.ComponentType<any>;
+  ProfitabilityChart: React.ComponentType<any>;
+  mockCommerceProfitability: any;
+  CommerceFunnelChart: React.ComponentType<any>;
+  mockCommerceConversionFunnel: any;
+  RevenueOrdersTrendChart: React.ComponentType<any>;
+  mockCommerceRevenueTrend: any;
+  mockProductPerformance: any[];
+  mockCommerceCreatives: any[];
+  mockCommerceProductVideos: any[];
+};
+
+const CommerceSection: React.FC<CommerceSectionProps> = ({
+  themedSectionClass,
+  themePanelClass,
+  mockCommerceRealtime,
+  RealTimeCard,
+  ProfitabilityChart,
+  mockCommerceProfitability,
+  CommerceFunnelChart,
+  mockCommerceConversionFunnel,
+  RevenueOrdersTrendChart,
+  mockCommerceRevenueTrend,
+  mockProductPerformance,
+  mockCommerceCreatives,
+  mockCommerceProductVideos,
+}) => {
 
   return (
     <div className="space-y-8">
@@ -63,15 +80,15 @@ export const renderCommerceSection = (ctx: any) => {
                   {mockProductPerformance.map((product: any) => (
                     <tr
                       key={product.name}
-                      className="group text-gray-800 hover:bg-orange-500 hover:text-white hover:shadow-sm transition-colors duration-150 cursor-pointer"
+                      className="group text-gray-800 hover:bg-gray-50 dark:hover:bg-white/5 hover:shadow-sm transition-colors duration-150 cursor-pointer"
                     >
-                      <td className="py-4 pr-6 font-semibold group-hover:text-white">{product.name}</td>
-                      <td className="py-4 pr-6 text-gray-500 group-hover:text-white">{product.category}</td>
-                      <td className="py-4 pr-6 group-hover:text-white">{product.sales.toLocaleString('en-US')}</td>
-                      <td className="py-4 pr-6 group-hover:text-white">THB {product.revenue.toLocaleString('en-US')}</td>
-                      <td className="py-4 pr-6 group-hover:text-white">{product.stock}</td>
+                      <td className="py-4 pr-6 font-semibold theme-text">{product.name}</td>
+                      <td className="py-4 pr-6 theme-muted">{product.category}</td>
+                      <td className="py-4 pr-6 theme-text">{product.sales.toLocaleString('en-US')}</td>
+                      <td className="py-4 pr-6 theme-text">${product.revenue.toLocaleString('en-US')}</td>
+                      <td className="py-4 pr-6 theme-text">{product.stock}</td>
                       <td className="py-4 pr-6 w-1/6">
-                        <span className="px-6 py-2.5 rounded-full text-[10px] font-bold uppercase bg-gray-700 text-white group-hover:bg-white group-hover:text-orange-700">
+                        <span className="px-6 py-2.5 rounded-full text-[10px] font-bold uppercase bg-gray-700 text-white">
                           {product.status}
                         </span>
                       </td>
@@ -156,7 +173,7 @@ export const renderCommerceSection = (ctx: any) => {
                     <td className="py-3 pr-4">{video.views.toLocaleString('en-US')}</td>
                     <td className="py-3 pr-4">{video.completionRate}</td>
                     <td className="py-3 pr-4">{video.ctr}</td>
-                    <td className="py-3 pr-4">THB {video.revenue.toLocaleString('en-US')}</td>
+                    <td className="py-3 pr-4">${video.revenue.toLocaleString('en-US')}</td>
                     <td className="py-3">
                       <span
                         className={`px-3 py-1 rounded-full text-[11px] uppercase ${
@@ -180,3 +197,5 @@ export const renderCommerceSection = (ctx: any) => {
     </div>
   );
 };
+
+export default CommerceSection;

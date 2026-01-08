@@ -72,7 +72,7 @@ const providerIcons = {
   facebook: Facebook,
   googleads: Search,
   line: MessageCircle,
-  tiktok: Music,
+  tiktok: () => <img src="https://cdn.simpleicons.org/tiktok/FFFFFF" className="h-6 w-6" alt="TikTok" />,
   shopee: ShoppingBag,
 };
 

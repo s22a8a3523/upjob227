@@ -1,17 +1,31 @@
-export const renderCrmSection = (ctx: any) => {
-  const {
-    themedSectionClass,
-    themePanelClass,
-    SectionTitle,
-    mockCrmRealtime,
-    RealTimeCard,
-    CrmStageChart,
-    mockCrmStages,
-    CrmAgeDonut,
-    mockCrmAgeRange,
-    LeadTrackingTable,
-    mockCrmLeads,
-  } = ctx;
+import React from 'react';
+import SectionTitle from '../SectionTitle';
+
+export type CrmSectionProps = {
+  themedSectionClass: string;
+  themePanelClass: string;
+  mockCrmRealtime: any[];
+  RealTimeCard: React.ComponentType<any>;
+  CrmStageChart: React.ComponentType<any>;
+  mockCrmStages: any;
+  CrmAgeDonut: React.ComponentType<any>;
+  mockCrmAgeRange: any;
+  LeadTrackingTable: React.ComponentType<any>;
+  mockCrmLeads: any;
+};
+
+const CrmSection: React.FC<CrmSectionProps> = ({
+  themedSectionClass,
+  themePanelClass,
+  mockCrmRealtime,
+  RealTimeCard,
+  CrmStageChart,
+  mockCrmStages,
+  CrmAgeDonut,
+  mockCrmAgeRange,
+  LeadTrackingTable,
+  mockCrmLeads,
+}) => {
 
   return (
     <div className="space-y-8">
@@ -21,10 +35,10 @@ export const renderCrmSection = (ctx: any) => {
         <div className={`${themePanelClass} shadow-sm hover:shadow-lg transition-all duration-300`}>
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-[20px] font-semibold text-gray-900">Real-Time Analytics</p>
-              <p className="text-base text-gray-500">Performance overview for your pipeline</p>
+              <p className="text-[20px] font-semibold theme-text">Real-Time Analytics</p>
+              <p className="text-base theme-muted">Performance overview for your pipeline</p>
             </div>
-            <p className="text-xs text-gray-500">+6.5% from last period</p>
+            <p className="text-xs theme-muted">+6.5% from last period</p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             {mockCrmRealtime.map((stat: any) => (
@@ -33,13 +47,13 @@ export const renderCrmSection = (ctx: any) => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <CrmStageChart stages={mockCrmStages} />
-          <CrmAgeDonut ranges={mockCrmAgeRange} />
-        </div>
+        <CrmStageChart stages={mockCrmStages} />
+        <CrmAgeDonut ranges={mockCrmAgeRange} />
 
         <LeadTrackingTable leads={mockCrmLeads} />
       </section>
     </div>
   );
 };
+
+export default CrmSection;

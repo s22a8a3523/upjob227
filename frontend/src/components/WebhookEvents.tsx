@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -31,7 +31,7 @@ const WebhookEvents: React.FC = () => {
     offset: 0
   });
 
-  const loadEvents = async () => {
+  const loadEvents = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -42,11 +42,11 @@ const WebhookEvents: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [filters]);
 
   useEffect(() => {
     loadEvents();
-  }, [filters]);
+  }, [loadEvents]);
 
   const handleReplay = async (eventId: string) => {
     try {
@@ -61,7 +61,7 @@ const WebhookEvents: React.FC = () => {
     if (window.confirm('Are you sure you want to delete this webhook event?')) {
       try {
         await deleteWebhookEvent(eventId);
-        setEvents(events.filter(e => e.id !== eventId));
+        setEvents((prev) => prev.filter((e) => e.id !== eventId));
       } catch (error: any) {
         setError(error.response?.data?.message || 'Failed to delete event');
       }

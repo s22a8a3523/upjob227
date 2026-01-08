@@ -157,6 +157,41 @@ export const mockDashboardMetrics: DashboardMetricPoint[] = [
 
 const now = new Date().toISOString();
 
+const seedFromString = (value: string) => {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash << 5) - hash + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+};
+
+const withCampaignDerivedMetrics = <T extends { id: string; spent?: number; conversions?: number }>(campaigns: T[]) =>
+  campaigns.map((campaign) => {
+    const seed = seedFromString(campaign.id);
+    const rawSpent = Number((campaign as any).spent ?? 0);
+    const rawBudget = Number((campaign as any).budget ?? 0);
+    const conversions = Number((campaign as any).conversions ?? 0);
+    const spent = rawSpent > 0 ? rawSpent : Math.round((8_000 + (seed % 18) * 2_250) + conversions * (12 + (seed % 9)));
+    const budget = rawBudget > 0 ? rawBudget : Math.round(spent * (1.12 + ((seed % 7) / 40)));
+    const impressions = Math.max(12_000, Math.round(spent * (24 + (seed % 14))));
+    const clicks = Math.max(120, Math.round(impressions * (0.012 + ((seed % 9) / 1000))));
+    const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+    const cpc = clicks > 0 ? spent / clicks : 0;
+    const cpm = impressions > 0 ? (spent / impressions) * 1000 : 0;
+    return {
+      ...campaign,
+      budget,
+      impressions,
+      clicks,
+      ctr,
+      cpc,
+      cpm,
+      conversions,
+      spent,
+    };
+  });
+
 export const mockCampaigns: Campaign[] = [
   {
     id: 'camp-fb-001',
@@ -169,7 +204,7 @@ export const mockCampaigns: Campaign[] = [
     objective: 'Awareness',
     budget: '150000',
     budgetType: 'daily',
-    currency: 'THB',
+    currency: 'USD',
     startDate: now,
     endDate: null,
     createdAt: now,
@@ -214,7 +249,7 @@ export const mockCampaigns: Campaign[] = [
     objective: 'Leads',
     budget: '200000',
     budgetType: 'daily',
-    currency: 'THB',
+    currency: 'USD',
     startDate: now,
     endDate: null,
     createdAt: now,
@@ -259,7 +294,7 @@ export const mockCampaigns: Campaign[] = [
     objective: 'Retention',
     budget: '90000',
     budgetType: 'lifetime',
-    currency: 'THB',
+    currency: 'USD',
     startDate: now,
     endDate: null,
     createdAt: now,
@@ -307,7 +342,7 @@ export const mockCampaignSourceInsights = [
       { id: 'gg-conv', label: 'Total Conversions', value: '1,486', delta: '+6.5% from last period', positive: true },
       { id: 'gg-roi', label: 'Avg. ROI', value: '225%', delta: '-6.5% from last period', positive: false },
     ],
-    campaigns: [
+    campaigns: withCampaignDerivedMetrics([
       { id: 'gg-c1', name: 'Search - Brand Terms', date: '15/11/2025', status: 'active', budget: 150_000, spent: 142_500, conversions: 312, roi: 156 },
       { id: 'gg-c2', name: 'Performance Max', date: '12/11/2025', status: 'active', budget: 200_000, spent: 168_200, conversions: 428, roi: 178 },
       { id: 'gg-c3', name: 'Display - Remarketing', date: '08/11/2025', status: 'paused', budget: 120_000, spent: 98_400, conversions: 186, roi: 134 },
@@ -318,7 +353,7 @@ export const mockCampaignSourceInsights = [
       { id: 'gg-c8', name: 'Display - Prospecting', date: '22/10/2025', status: 'active', budget: 130_000, spent: 97_200, conversions: 175, roi: 140 },
       { id: 'gg-c9', name: 'YouTube - Shorts Boost', date: '18/10/2025', status: 'paused', budget: 90_000, spent: 82_600, conversions: 120, roi: 112 },
       { id: 'gg-c10', name: 'Discovery - New Users', date: '12/10/2025', status: 'ended', budget: 100_000, spent: 99_100, conversions: 150, roi: 118 },
-    ],
+    ]),
     ageRange: [
       { name: 'Search Brand 18-24', value: 18, color: '#ea580c' },
       { name: 'Performance Max 25-34', value: 32, color: '#fb923c' },
@@ -355,6 +390,50 @@ export const mockCampaignSourceInsights = [
       { campaign: 'YouTube - Shorts Boost', spend: 980, impressions: 50_000, clicks: 920, ctr: 1.8, cpc: 0.28, cpm: 19 },
       { campaign: 'Discovery - New Users', spend: 1_080, impressions: 42_000, clicks: 1_020, ctr: 2.4, cpc: 0.27, cpm: 20 },
     ],
+    creatives: [],
+  },
+  {
+    id: 'google-analytics',
+    label: 'Google Analytics',
+    logo: 'https://cdn.simpleicons.org/googleanalytics/f9ab00',
+    accent: '#f9ab00',
+    summary: [
+      { id: 'ga-sessions', label: 'Sessions', value: '128K', delta: '+5.1% from last period', positive: true },
+      { id: 'ga-users', label: 'Users', value: '74K', delta: '+2.8% from last period', positive: true },
+      { id: 'ga-conv', label: 'Conversions', value: '3,420', delta: '+1.9% from last period', positive: true },
+      { id: 'ga-revenue', label: 'Revenue', value: '$1.85M', delta: '-0.7% from last period', positive: false },
+    ],
+    campaigns: withCampaignDerivedMetrics([
+      { id: 'ga-c1', name: 'Organic Traffic (GA4)', date: '15/11/2025', status: 'active', budget: 0, spent: 0, conversions: 680, roi: 0 },
+      { id: 'ga-c2', name: 'Paid Search Landing Pages', date: '12/11/2025', status: 'active', budget: 0, spent: 0, conversions: 520, roi: 0 },
+      { id: 'ga-c3', name: 'Social Referral Traffic', date: '08/11/2025', status: 'paused', budget: 0, spent: 0, conversions: 310, roi: 0 },
+      { id: 'ga-c4', name: 'Email Campaign Engagement', date: '05/11/2025', status: 'active', budget: 0, spent: 0, conversions: 410, roi: 0 },
+    ]),
+    ageRange: [
+      { name: 'Sessions 18-24', value: 22, color: '#f59e0b' },
+      { name: 'Sessions 25-34', value: 34, color: '#fbbf24' },
+      { name: 'Sessions 35-44', value: 26, color: '#fde68a' },
+      { name: 'Sessions 45-54', value: 18, color: '#fef3c7' },
+    ],
+    conversionRate: [
+      { label: 'Organic Traffic (GA4)', value: 2.8, color: '#f59e0b' },
+      { label: 'Paid Search Landing Pages', value: 3.2, color: '#fbbf24' },
+      { label: 'Social Referral Traffic', value: 2.1, color: '#fde68a' },
+      { label: 'Email Campaign Engagement', value: 3.6, color: '#fef3c7' },
+    ],
+    genderDistribution: [
+      { segment: 'Organic Traffic', male: 48, female: 56, unknown: 10 },
+      { segment: 'Paid Search', male: 52, female: 50, unknown: 12 },
+      { segment: 'Social Referral', male: 44, female: 60, unknown: 14 },
+      { segment: 'Email', male: 50, female: 54, unknown: 11 },
+    ],
+    adPerformance: [
+      { campaign: 'Organic Traffic (GA4)', spend: 920, impressions: 41_000, clicks: 1_180, ctr: 2.9, cpc: 0.78, cpm: 22 },
+      { campaign: 'Paid Search Landing Pages', spend: 1_140, impressions: 46_500, clicks: 1_420, ctr: 3.1, cpc: 0.80, cpm: 25 },
+      { campaign: 'Social Referral Traffic', spend: 760, impressions: 34_000, clicks: 920, ctr: 2.7, cpc: 0.83, cpm: 22 },
+      { campaign: 'Email Campaign Engagement', spend: 980, impressions: 38_500, clicks: 1_120, ctr: 2.9, cpc: 0.88, cpm: 25 },
+    ],
+    creatives: [],
   },
   {
     id: 'facebook',
@@ -367,7 +446,7 @@ export const mockCampaignSourceInsights = [
       { id: 'fb-conv', label: 'Total Conversions', value: '1,248', delta: '+3.2% from last period', positive: true },
       { id: 'fb-roi', label: 'Avg. ROI', value: '215%', delta: '-2.1% from last period', positive: false },
     ],
-    campaigns: [
+    campaigns: withCampaignDerivedMetrics([
       { id: 'fb-c1', name: 'Awareness Burst', date: '14/11/2025', status: 'active', budget: 180_000, spent: 142_000, conversions: 286, roi: 138 },
       { id: 'fb-c2', name: 'Prospecting - Q4', date: '12/11/2025', status: 'active', budget: 165_000, spent: 138_500, conversions: 254, roi: 126 },
       { id: 'fb-c3', name: 'Retention Flow', date: '09/11/2025', status: 'paused', budget: 120_000, spent: 84_200, conversions: 198, roi: 148 },
@@ -378,7 +457,7 @@ export const mockCampaignSourceInsights = [
       { id: 'fb-c8', name: 'Reels - Engagement Boost', date: '24/10/2025', status: 'active', budget: 105_000, spent: 88_600, conversions: 140, roi: 124 },
       { id: 'fb-c9', name: 'Advantage+ Shopping', date: '18/10/2025', status: 'paused', budget: 210_000, spent: 201_500, conversions: 410, roi: 175 },
       { id: 'fb-c10', name: 'Traffic - Landing Page Views', date: '10/10/2025', status: 'ended', budget: 80_000, spent: 79_200, conversions: 95, roi: 96 },
-    ],
+    ]),
     ageRange: [
       { name: 'Awareness 18-24', value: 31, color: '#ea580c' },
       { name: 'Prospecting 25-34', value: 29, color: '#fb923c' },
@@ -424,17 +503,17 @@ export const mockCampaignSourceInsights = [
   {
     id: 'tiktok',
     label: 'TikTok Ads',
-    logo: 'https://cdn.simpleicons.org/tiktok/14b8a6',
-    accent: '#14b8a6',
+    logo: 'https://cdn.simpleicons.org/tiktok/FFFFFF',
+    accent: '#111827',
     summary: [
       { id: 'tt-total', label: 'Total Campaigns', value: '10', delta: '+3.0% from last period', positive: true },
-      { id: 'tt-spend', label: 'Total SpendRate', value: '$980', delta: '+5.2% from last period', positive: true },
-      { id: 'tt-conv', label: 'Total Conversions', value: '1,108', delta: '+7.1% from last period', positive: true },
+      { id: 'tt-spend', label: 'Total SpendRate', value: '$346.0K', delta: '+2.8% from last period', positive: true },
+      { id: 'tt-conv', label: 'Total Conversions', value: '1,024', delta: '+2.2% from last period', positive: true },
       { id: 'tt-roi', label: 'Avg. ROI', value: '240%', delta: '+1.3% from last period', positive: true },
     ],
-    campaigns: [
+    campaigns: withCampaignDerivedMetrics([
       { id: 'tt-c1', name: 'Spark Ads - Product A', date: '13/11/2025', status: 'active', budget: 160_000, spent: 122_000, conversions: 284, roi: 162 },
-      { id: 'tt-c2', name: 'Creator Pack', date: '11/11/2025', status: 'active', budget: 150_000, spent: 110_000, conversions: 242, roi: 156 },
+      { id: 'tt-c2', name: 'Video Views - Product B', date: '13/11/2025', status: 'paused', budget: 120_000, spent: 81_200, conversions: 196, roi: 134 },
       { id: 'tt-c3', name: 'Always-on Reach', date: '08/11/2025', status: 'ended', budget: 120_000, spent: 86_000, conversions: 186, roi: 148 },
       { id: 'tt-c4', name: 'Live Shopping Push', date: '06/11/2025', status: 'active', budget: 130_000, spent: 94_000, conversions: 196, roi: 154 },
       { id: 'tt-c5', name: 'TikTok Shop - Flash Deals', date: '03/11/2025', status: 'paused', budget: 170_000, spent: 160_400, conversions: 310, roi: 168 },
@@ -443,7 +522,7 @@ export const mockCampaignSourceInsights = [
       { id: 'tt-c8', name: 'TopView Launch', date: '19/10/2025', status: 'paused', budget: 220_000, spent: 208_900, conversions: 280, roi: 140 },
       { id: 'tt-c9', name: 'UGC - Creator Whitelist', date: '14/10/2025', status: 'active', budget: 125_000, spent: 98_400, conversions: 210, roi: 158 },
       { id: 'tt-c10', name: 'Always-on - Traffic', date: '08/10/2025', status: 'ended', budget: 90_000, spent: 89_300, conversions: 110, roi: 102 },
-    ],
+    ]),
     ageRange: [
       { name: 'Spark Ads 18-24', value: 42, color: '#f97316' },
       { name: 'Creator Pack 25-34', value: 26, color: '#fb923c' },
@@ -497,7 +576,7 @@ export const mockCampaignSourceInsights = [
       { id: 'ln-conv', label: 'Total Conversions', value: '986', delta: '+4.8% from last period', positive: true },
       { id: 'ln-roi', label: 'Avg. ROI', value: '210%', delta: '-1.2% from last period', positive: false },
     ],
-    campaigns: [
+    campaigns: withCampaignDerivedMetrics([
       { id: 'ln-c1', name: 'OA Broadcast', date: '12/11/2025', status: 'active', budget: 120_000, spent: 98_500, conversions: 212, roi: 142 },
       { id: 'ln-c2', name: 'Line Points Booster', date: '10/11/2025', status: 'active', budget: 110_000, spent: 92_000, conversions: 198, roi: 148 },
       { id: 'ln-c3', name: 'Smart Channel', date: '08/11/2025', status: 'paused', budget: 100_000, spent: 78_000, conversions: 184, roi: 135 },
@@ -508,7 +587,7 @@ export const mockCampaignSourceInsights = [
       { id: 'ln-c8', name: 'LINE Points - Booster v2', date: '18/10/2025', status: 'paused', budget: 115_000, spent: 102_400, conversions: 190, roi: 142 },
       { id: 'ln-c9', name: 'New Friends Acquisition', date: '12/10/2025', status: 'active', budget: 90_000, spent: 76_200, conversions: 160, roi: 136 },
       { id: 'ln-c10', name: 'Broadcast - Clearance', date: '06/10/2025', status: 'ended', budget: 80_000, spent: 79_100, conversions: 120, roi: 108 },
-    ],
+    ]),
     ageRange: [
       { name: 'OA Broadcast 18-24', value: 28, color: '#ea580c' },
       { name: 'Line Points 25-34', value: 32, color: '#fb923c' },
@@ -571,8 +650,8 @@ export const mockOverviewHighlights = [
   {
     id: 'net-revenue',
     label: 'Net Revenue',
-    value: 'THB 4.23M',
-    helper: 'vs 30-day target THB 3.7M',
+    value: '$4.23M',
+    helper: 'vs 30-day target $3.7M',
     accent: 'bg-gradient-to-r from-orange-500/10 to-pink-500/10 text-orange-600',
   },
 ];
@@ -754,6 +833,10 @@ export const mockSeoRegionalPerformance = [
   { region: 'SKA', value: 14, color: '#4ade80' },
   { region: 'NMA', value: 12, color: '#38bdf8' },
   { region: 'CBR', value: 12, color: '#a855f7' },
+  { region: 'KKN', value: 10, color: '#ec4899' },
+  { region: 'UDN', value: 9, color: '#22c55e' },
+  { region: 'KBI', value: 8, color: '#06b6d4' },
+  { region: 'CBI', value: 7, color: '#eab308' },
 ];
 
 export const mockSeoRightRailStats = [
@@ -777,11 +860,11 @@ export const mockSeoUrlRatings = [
 ];
 
 export const mockCommerceInsights = {
+  title: 'E-commerce overview',
   summary: [
-    { label: 'Orders', value: '1,284', helper: '+22% MoM' },
-    { label: 'AOV', value: 'THB 1,530', helper: '+5% MoM' },
-    { label: 'Return Rate', value: '1.8%', helper: '-0.4pp' },
-    { label: 'Gross Profit', value: 'THB 2.18M', helper: '+14% MoM' },
+    { label: 'Total Orders', value: '42K', helper: '+9% MoM' },
+    { label: 'Total Customers', value: '18K', helper: '+5% MoM' },
+    { label: 'Gross Profit', value: '$2.18M', helper: '+14% MoM' },
   ],
   topProducts: [
     { name: 'RGA Performance Kit', revenue: 428_000, orders: 186, conversionRate: 3.2 },
@@ -799,11 +882,24 @@ export const mockProductPerformance = [
   { name: 'Bluetooth Speaker Mini', category: 'Electronics', sales: 89, revenue: 2_134, stock: 12, status: 'Underperforming' },
 ];
 
+export const mockActiveCampaignMonitor = [
+  { campaignName: 'Meta Prospecting • Q1 Always-on', platform: 'Facebook', conversions: 1234, cpa: 37.5, budget: 46234 },
+  { campaignName: 'Search • Brand Defense', platform: 'Google Ads', conversions: 987, cpa: 28.1, budget: 27735 },
+  { campaignName: 'Reels • Creator Whitelist', platform: 'Instagram', conversions: 756, cpa: 19.8, budget: 14969 },
+  { campaignName: 'Spark Ads • Bestseller Push', platform: 'TikTok', conversions: 745, cpa: 22.4, budget: 16688 },
+  { campaignName: 'OA Broadcast • Re-engagement', platform: 'LINE', conversions: 123, cpa: 15.6, budget: 1919 },
+  { campaignName: 'Affiliate • Promo Codes', platform: 'Partner', conversions: 89, cpa: 12.3, budget: 1095 },
+  { campaignName: 'Retargeting • Cart Abandoners', platform: 'Facebook', conversions: 642, cpa: 18.9, budget: 12134 },
+  { campaignName: 'Search • Non-brand Scale', platform: 'Google Ads', conversions: 531, cpa: 31.7, budget: 16833 },
+  { campaignName: 'Stories • Warm Audience', platform: 'Instagram', conversions: 418, cpa: 21.4, budget: 8947 },
+  { campaignName: 'LINE OA • Broadcast Promo', platform: 'LINE', conversions: 201, cpa: 14.2, budget: 2854 },
+];
+
 export const mockCrmPipeline = [
-  { stage: 'New', leads: 132, value: 'THB 3.1M', trend: '+9%' },
-  { stage: 'Qualified', leads: 96, value: 'THB 2.4M', trend: '+4%' },
-  { stage: 'Proposal', leads: 58, value: 'THB 1.9M', trend: '+2%' },
-  { stage: 'Closed Won', leads: 26, value: 'THB 1.1M', trend: '+12%' },
+  { stage: 'New', leads: 132, value: '$3.1M', trend: '+9%' },
+  { stage: 'Qualified', leads: 96, value: '$2.4M', trend: '+4%' },
+  { stage: 'Proposal', leads: 58, value: '$1.9M', trend: '+2%' },
+  { stage: 'Closed Won', leads: 26, value: '$1.1M', trend: '+12%' },
 ];
 
 export const mockCrmRealtime = [
@@ -859,208 +955,41 @@ export const mockTrendRevenueByChannel = [
 ];
 
 export const mockTrendSalesFunnel = [
-  { stage: 'Awareness', value: 2200 },
-  { stage: 'Interest', value: 1800 },
-  { stage: 'Validate', value: 1200 },
-  { stage: 'Purchase', value: 640 },
+  { stage: 'Awareness', value: 1300 },
+  { stage: 'Interest', value: 950 },
+  { stage: 'Marketing', value: 450 },
+  { stage: 'Intent', value: 140 },
+  { stage: 'Purchase', value: 80 },
 ];
 
 export const mockTrendRevenueTrend = [
-  { month: 'Jan', revenue: 24000 },
-  { month: 'Feb', revenue: 26000 },
-  { month: 'Mar', revenue: 32000 },
-  { month: 'Apr', revenue: 38000 },
-  { month: 'May', revenue: 41000 },
-  { month: 'Jun', revenue: 36000 },
-  { month: 'Jul', revenue: 42000 },
-  { month: 'Aug', revenue: 48000 },
-  { month: 'Sep', revenue: 54000 },
-  { month: 'Oct', revenue: 50000 },
-  { month: 'Nov', revenue: 46000 },
+  { month: 'Jan', revenue2025: 42000, revenue2026: 43800 },
+  { month: 'Feb', revenue2025: 38500, revenue2026: 40100 },
+  { month: 'Mar', revenue2025: 46800, revenue2026: 46200 },
+  { month: 'Apr', revenue2025: 45200, revenue2026: null },
+  { month: 'May', revenue2025: 49000, revenue2026: null },
+  { month: 'Jun', revenue2025: 47400, revenue2026: null },
+  { month: 'Jul', revenue2025: 51200, revenue2026: null },
+  { month: 'Aug', revenue2025: 53600, revenue2026: null },
+  { month: 'Sep', revenue2025: 49800, revenue2026: null },
+  { month: 'Oct', revenue2025: 55400, revenue2026: null },
+  { month: 'Nov', revenue2025: 58200, revenue2026: null },
+  { month: 'Dec', revenue2025: 61100, revenue2026: null },
 ];
 
 export const mockTrendLeadSources = [
-  { source: 'Google Ads', leads: 320, cost: 12000, revenue: 30000, roi: '150%' },
-  { source: 'Facebook', leads: 320, cost: 12000, revenue: 18000, roi: '105%' },
-  { source: 'LINE Ads', leads: 280, cost: 8000, revenue: 7000, roi: '90%' },
-  { source: 'TikTok', leads: 280, cost: 10000, revenue: 10000, roi: '0%' },
-  { source: 'Organic', leads: 101, cost: 0, revenue: 9000, roi: '∞' },
-  { source: 'Referral', leads: 320, cost: 0, revenue: 12000, roi: 'N/A' },
+  { source: 'Google Ads', leads: 420, cost: 82_000, revenue: 136_000, roi: '1.66x' },
+  { source: 'Facebook', leads: 360, cost: 74_500, revenue: 118_000, roi: '1.58x' },
+  { source: 'LINE OA', leads: 240, cost: 42_800, revenue: 73_500, roi: '1.72x' },
+  { source: 'TikTok', leads: 190, cost: 38_600, revenue: 54_200, roi: '1.40x' },
+  { source: 'Organic', leads: 310, cost: 18_200, revenue: 92_400, roi: '5.08x' },
 ];
 
 export const mockTrendSalesReps = [
-  { rep: 'John S.', leadsAssigned: 500, conversionRate: '8.5%', revenue: '$35,000' },
-  { rep: 'Sarah T.', leadsAssigned: 400, conversionRate: '9.3%', revenue: '$26,000' },
-  { rep: 'Mark L.', leadsAssigned: 360, conversionRate: '5.3%', revenue: '$19,000' },
-  { rep: 'Anna K.', leadsAssigned: 300, conversionRate: '4.5%', revenue: '$10,000' },
-  { rep: 'David P.', leadsAssigned: 200, conversionRate: '6.0%', revenue: '$6,000' },
-];
-
-export const mockSettingsShortcuts = [
-  { label: 'Integrations', status: 'Connected (4/6)', helper: 'Google, Facebook, LINE, TikTok' },
-  { label: 'Alerts & Thresholds', status: '2 active alerts', helper: 'CTR Drift, ROAS Drop' },
-  { label: 'Team Access', status: '8 members', helper: 'Last invite 2 days ago' },
-];
-
-export const mockReportAutomation = [
-  { id: 'rep-01', name: 'Executive Monday Snapshot', type: 'PDF', schedule: 'Every Monday • 08:00', status: 'Scheduled' },
-  { id: 'rep-02', name: 'Channel Deep Dive', type: 'Spreadsheet', schedule: '1st of month • 09:00', status: 'Scheduled' },
-  { id: 'rep-03', name: 'CRM Pipeline Pulse', type: 'Slack', schedule: 'Daily • 18:00', status: 'Automation' },
-];
-
-export const mockReportBuilders = {
-  builders: [
-    { id: 'report', name: 'Name Report', menu: 'Campaign', dateRange: 'Last 30 days', format: ['PDF', 'CSV', 'XLSX', 'DOCX'] },
-  ],
-  schedule: {
-    name: 'Name Report',
-    menu: 'Campaign',
-    dateRange: 'Last 30 days',
-    scheduleTime: '08:00',
-    recipients: ['ops@rga.com', 'exec@rga.com'],
-    format: ['PDF', 'CSV', 'XLSX', 'DOCX'],
-  },
-};
-
-export const mockReportStatus = [
-  { name: 'Sarah Johnson', email: 'sarah.j@company.com', role: 'Admin', status: 'Scheduled', date: '12/11/2025' },
-  { name: 'Michael Chen', email: 'michael@startup.io', role: 'Admin', status: 'Scheduled', date: '12/11/2025' },
-  { name: 'Emily Davis', email: 'emily@enterprise.com', role: 'Executive', status: 'Download', date: '12/11/2025' },
-  { name: 'James Wilson', email: 'jwilson@bizco.com', role: 'Admin', status: 'Notified', date: '12/11/2025' },
-  { name: 'Lisa Anderson', email: 'lisa@global.com', role: 'Analyst', status: 'Download', date: '12/11/2025' },
-  { name: 'David Martinez', email: 'david@solutions.com', role: 'Analyst', status: 'Notified', date: '12/11/2025' },
-  { name: 'Amanda Taylor', email: 'amanda@ventures.com', role: 'Analyst', status: 'Notified', date: '12/11/2025' },
-];
-
-export const mockNotifications = [
-  { id: 'noti-1', title: 'ROAS Drop Alert', message: 'Facebook Prospecting campaign ROAS fell 12% vs yesterday.', time: '5m ago', severity: 'warning' },
-  { id: 'noti-2', title: 'Organic Spike', message: 'SEO & Web traffic is +18% WoW after content refresh.', time: '18m ago', severity: 'success' },
-  { id: 'noti-3', title: 'Budget Threshold', message: 'Google Search Max Conversion is at 92% of monthly budget.', time: '1h ago', severity: 'info' },
-];
-
-export const KPI_ALERT_MENU_OPTIONS = [
-  'Overview Dashboard',
-  'Campaign Performance',
-  'SEO & Web Analytics',
-  'E-commerce Insights',
-  'CRM & Leads',
-  'Trend Analysis & History',
-];
-
-export const KPI_METRIC_OPTIONS: Record<string, string[]> = {
-  'Overview Dashboard': ['Financial Overview', 'User Conversion Funnel', 'Conversions Platform', 'LTV : CAC Ratio'],
-  'Campaign Performance': ['ROAS', 'Total Spend', 'Impressions', 'Clicks', 'CTR', 'Conversions', 'CPA'],
-  'SEO & Web Analytics': ['Organic Sessions', 'Keyword Rankings', 'Pages / Session', 'Bounce Rate', 'Avg. Time on Site', 'Conversions'],
-  'E-commerce Insights': ['Total Revenue', 'Orders', 'AOV', 'Conversion Rate', 'Refund Rate', 'Repeat Purchase Rate'],
-  'CRM & Leads': ['Total Leads', 'Qualified Leads', 'Pipeline Value', 'Win Rate', 'CAC', 'LTV'],
-  'Trend Analysis & History': ['Revenue Trend', 'Lead Trend', 'Channel Comparison', 'Sales Funnel', 'MoM Growth'],
-};
-
-export const KPI_CONDITION_OPTIONS = ['Increase %', 'Decrease %'] as const;
-
-export const KPI_METRIC_SUMMARY: Record<
-  string,
-  { threshold: string; status: 'active' | 'inactive'; condition?: (typeof KPI_CONDITION_OPTIONS)[number] }
-> = {
-  'Financial Overview': { threshold: '5', status: 'active', condition: 'Increase %' },
-  'User Conversion Funnel': { threshold: '3.5', status: 'active', condition: 'Decrease %' },
-  'Conversions Platform': { threshold: '4', status: 'active', condition: 'Increase %' },
-  'LTV : CAC Ratio': { threshold: '3.0', status: 'active', condition: 'Decrease %' },
-};
-
-export const mockSettingsKpis = [
-  {
-    id: 'kpi-1',
-    alertName: 'Overview Dashboard',
-    metric: 'Financial Overview',
-    condition: 'Increase %',
-    threshold: '5',
-    status: 'active',
-  },
-];
-
-export const mockSettingsBranding = {
-  theme: 'White',
-  accentColor: '#f97316',
-  menuColor: '#191919',
-  companyName: 'Rise Group Asia',
-};
-
-export const mockSettingsRefresh = {
-  frequency: 'Every 5 minutes',
-  manual: true,
-  realtime: true,
-};
-
-export const mockSettingsIntegrations = [
-  { id: 'google', name: 'Google', status: 'Connected', syncedAt: '2m ago' },
-  { id: 'facebook', name: 'Facebook', status: 'Connected', syncedAt: '5m ago' },
-  { id: 'tiktok', name: 'TikTok', status: 'Connect', syncedAt: 'Not linked' },
-  { id: 'line', name: 'LINE', status: 'Connect', syncedAt: 'Not linked' },
-];
-
-export const mockSettingsUsers = [
-  { id: 'user-1', name: 'Kantichai Piyakaram', email: 'ounztech@gmail.com', role: 'Admin', status: 'Active' },
-  { id: 'user-2', name: 'Kantichai Piyakaram', email: 'ounztech@gmail.com', role: 'Admin', status: 'Active' },
-];
-
-export const mockSettingsAlerts = {
-  alertTypes: [
-    { label: 'KPI Threshold Alerts', enabled: true },
-    { label: 'Data Sync Status', enabled: true },
-    { label: 'Budget Alerts', enabled: false },
-    { label: 'Anomaly Detection', enabled: true },
-  ],
-  deliveryChannels: [
-    { label: 'In-app Notifications', enabled: true },
-    { label: 'Email Notifications', enabled: true },
-    { label: 'SMS Alerts (Critical Only)', enabled: false },
-  ],
-  recipients: [],
-};
-
-export const mockRealtimeStats = [
-  { id: 'active-now', label: 'Active Now', value: '563', delta: '+6.5% from last period', positive: true },
-  { id: 'active-users', label: 'Active Users', value: '8,234', delta: '+6.5% from last period', positive: true },
-  { id: 'session-time', label: 'Avg. Session Time', value: '3m 24s', delta: '+6.5% from last period', positive: true },
-  { id: 'bounce-rate', label: 'Bounce Rate', value: '42.3%', delta: '-6.5% from last period', positive: false },
-];
-
-export const mockFinancialOverview = {
-  roi: '150%',
-  roiChange: '+5.8%',
-  revenue: 2_450_000,
-  revenueChange: '+8.2%',
-  profit: 1_470_000,
-  profitChange: '+12.1%',
-  cost: 980_000,
-  costChange: '+3.4%',
-  breakdown: [
-    { name: 'Revenue', value: 2_450_000, color: '#36c96c' },
-    { name: 'Profit', value: 1_470_000, color: '#082debff' },
-    { name: 'Cost', value: 980_000, color: '#ea9729ff' },
-  ],
-};
-
-export const mockConversionFunnel = [
-  { label: 'Active Users', value: 45, color: '#f42e2eff' },
-  { label: 'New Leads', value: 30, color: '#eab308' },
-  { label: 'Conversion', value: 15, color: '#22c55e' },
-];
-
-export const mockLtvTrend = [
-  { label: 'Week 1', ltv: 520, cac: 180 },
-  { label: 'Week 2', ltv: 560, cac: 190 },
-  { label: 'Week 3', ltv: 590, cac: 195 },
-  { label: 'Week 4', ltv: 625, cac: 200 },
-];
-
-export const mockConversionPlatforms = [
-  { platform: 'Facebook', value: 320 },
-  { platform: 'Google', value: 280 },
-  { platform: 'Google Analytics', value: 210 },
-  { platform: 'LINE', value: 140 },
-  { platform: 'TikTok', value: 120 },
+  { rep: 'Krit', leadsAssigned: 86, conversionRate: '18.4%', revenue: '$145,000' },
+  { rep: 'Chanya', leadsAssigned: 78, conversionRate: '16.2%', revenue: '$128,000' },
+  { rep: 'Nattapong', leadsAssigned: 69, conversionRate: '14.7%', revenue: '$112,000' },
+  { rep: 'Supansa', leadsAssigned: 62, conversionRate: '13.9%', revenue: '$98,000' },
 ];
 
 export const ltvCacData = [
@@ -1112,5 +1041,201 @@ export const mockNotificationPreferences = [
     description: 'Feature updates and beta invites from RGA Platform',
     channel: 'Email',
     enabled: false,
+  },
+];
+
+export const mockSettingsShortcuts = [
+  { id: 'shortcut-overview', title: 'Overview Dashboard', description: 'Jump to real-time KPIs and insights.' },
+  { id: 'shortcut-campaigns', title: 'Campaign Performance', description: 'Review spend, conversions, and ROI.' },
+  { id: 'shortcut-reports', title: 'Reports', description: 'Schedule exports and automate delivery.' },
+];
+
+export const KPI_ALERT_MENU_OPTIONS = [
+  'Overview Dashboard',
+  'Campaign Performance',
+  'SEO & Web Analytics',
+  'E-commerce Insights',
+  'CRM & Leads Insights',
+  'Trend Analysis & History',
+];
+
+export const KPI_CONDITION_OPTIONS = ['Increase', 'Decrease'] as const;
+
+export const KPI_METRIC_OPTIONS: Record<string, string[]> = {
+  'Overview Dashboard': ['Financial Overview', 'Total Revenue', 'Total Conversions', 'Avg. ROI'],
+  'Campaign Performance': ['Spend', 'Conversions', 'CPA', 'ROAS'],
+  'SEO & Web Analytics': ['Sessions', 'Users', 'Conversions', 'Revenue'],
+  'E-commerce Insights': ['Orders', 'Revenue', 'AOV', 'Conversion Rate'],
+  'CRM & Leads': ['New Leads', 'Qualified Leads', 'Conversion Rate'],
+  'Trend Analysis & History': ['Spend vs Revenue', 'Leads Conversion'],
+};
+
+export const KPI_METRIC_SUMMARY: Record<string, { threshold: string; status: string; condition?: (typeof KPI_CONDITION_OPTIONS)[number] }> = {
+  'Financial Overview': { threshold: '5', status: 'active', condition: 'Increase' },
+  'Total Revenue': { threshold: '10', status: 'active', condition: 'Increase' },
+  'Total Conversions': { threshold: '8', status: 'active', condition: 'Increase' },
+  'Avg. ROI': { threshold: '6', status: 'active', condition: 'Increase' },
+  'Campaign Spend': { threshold: '12', status: 'active', condition: 'Increase' },
+  'Campaign ROAS': { threshold: '9', status: 'active', condition: 'Decrease' },
+  'Website Sessions': { threshold: '7', status: 'active', condition: 'Increase' },
+  'Bounce Rate': { threshold: '5', status: 'active', condition: 'Decrease' },
+  'Orders': { threshold: '8', status: 'active', condition: 'Increase' },
+  'Cart Abandonment': { threshold: '4', status: 'active', condition: 'Decrease' },
+  'Leads': { threshold: '6', status: 'active', condition: 'Increase' },
+  'Lead Conversion Rate': { threshold: '3', status: 'active', condition: 'Increase' },
+  'Spend vs Revenue': { threshold: '10', status: 'active', condition: 'Increase' },
+  'Leads Conversion': { threshold: '7', status: 'active', condition: 'Increase' },
+};
+
+export const mockSettingsKpis = [
+  {
+    id: 'kpi-001',
+    alertName: 'Campaign Performance',
+    metric: 'CPA',
+    condition: 'Increase',
+    threshold: '10',
+    status: 'active',
+    platform: 'Google Ads',
+  },
+  {
+    id: 'kpi-002',
+    alertName: 'Overview Dashboard',
+    metric: 'Total Conversions',
+    condition: 'Increase',
+    threshold: '5',
+    status: 'active',
+    platform: '',
+  },
+];
+
+export const mockSettingsBranding = {
+  theme: 'Light',
+  menuColor: '#BFDBFE',
+  accentColor: '#f97316',
+  companyName: 'Rise Group Asia',
+};
+
+export const mockSettingsRefresh = {
+  manual: true,
+  realtime: true,
+  frequency: 'Every 5 minutes',
+};
+
+export const mockSettingsIntegrations = [
+  { id: 'int-gg', name: 'Google Ads', status: 'Connected', connected: true },
+  { id: 'int-fb', name: 'Facebook Ads', status: 'Connected', connected: true },
+  { id: 'int-line', name: 'LINE OA', status: 'Sync pending', connected: false },
+];
+
+export const mockSettingsUsers = [
+  { id: 'user-001', name: 'Kamonchanok Suksawat', email: 'kamonchanok@risegroup.asia', role: 'admin' },
+  { id: 'user-002', name: 'Pimchanok W.', email: 'pimchanok@risegroup.asia', role: 'analyst' },
+  { id: 'user-003', name: 'Somchai P.', email: 'somchai@risegroup.asia', role: 'executive' },
+];
+
+export const mockSettingsAlerts = {
+  alertTypes: [
+    { label: 'Spend spike', enabled: true },
+    { label: 'CPA increase', enabled: true },
+    { label: 'Conversion drop', enabled: false },
+  ],
+  deliveryChannels: [
+    { label: 'Email', enabled: true },
+    { label: 'LINE', enabled: true },
+    { label: 'Slack', enabled: false },
+  ],
+  recipients: ['kamonchanok@risegroup.asia'],
+};
+
+export const mockReportAutomation = {
+  enabled: true,
+  lastRun: '19 Nov 2025 • 08:30',
+  nextRun: '26 Nov 2025 • 08:30',
+};
+
+export const mockReportBuilders = {
+  schedule: {
+    scheduleTime: new Date().toISOString().slice(0, 10),
+    menu: 'Campaign Performance',
+  },
+};
+
+export const mockReportStatus = [
+  {
+    name: 'Kamonchanok Suksawat',
+    email: 'kamonchanok@risegroup.asia',
+    role: 'admin',
+    status: 'scheduled',
+    metrics: ['CPA', 'Conversions'],
+    date: '19 Nov 2025',
+  },
+  {
+    name: 'Somchai P.',
+    email: 'somchai@risegroup.asia',
+    role: 'executive',
+    status: 'download',
+    metrics: ['Total Revenue', 'Avg. ROI'],
+    date: '18 Nov 2025',
+  },
+];
+
+export const mockRealtimeStats = [
+  { id: 'campaigns', label: 'Total Campaigns', value: '14', helper: '+6.5% from last period', positive: true },
+  { id: 'spend', label: 'Total SpendRate', value: '$18.2K', helper: '+6.5% from last period', positive: true },
+  { id: 'conversions', label: 'Total Conversions', value: '1,486', helper: '+6.5% from last period', positive: true },
+  { id: 'roi', label: 'Avg. ROI', value: '225%', helper: '-6.5% from last period', positive: false },
+];
+
+export const mockFinancialOverview = {
+  roi: '3.4x',
+  roiChange: '+0.2 vs last month',
+  revenue: 2450000,
+  revenueChange: '+15.3%',
+  profit: 2180000,
+  profitChange: '+12.1%',
+  cost: 720000,
+  costChange: '+6.8%',
+  breakdown: [
+    { label: 'Paid', value: 1176000, color: '#60a5fa' },
+    { label: 'Organic', value: 784000, color: '#22c55e' },
+    { label: 'Referral', value: 490000, color: '#f97316' },
+  ],
+};
+
+export const mockConversionFunnel = [
+  { label: 'Visits', value: 100, color: '#60a5fa' },
+  { label: 'Add to cart', value: 62, color: '#f97316' },
+  { label: 'Checkout', value: 38, color: '#fbbf24' },
+  { label: 'Purchase', value: 22, color: '#22c55e' },
+];
+
+export const mockLtvTrend = [
+  { week: 'Week 1', ltv: 520, cac: 180 },
+  { week: 'Week 2', ltv: 560, cac: 190 },
+  { week: 'Week 3', ltv: 590, cac: 195 },
+  { week: 'Week 4', ltv: 625, cac: 200 },
+];
+
+export const mockConversionPlatforms = [
+  { platform: 'Google Ads', value: 520 },
+  { platform: 'Facebook', value: 420 },
+  { platform: 'LINE', value: 260 },
+  { platform: 'TikTok', value: 180 },
+];
+
+export const mockNotifications = [
+  {
+    id: 'notif-001',
+    title: 'CPA spike detected',
+    message: 'CPA increased above your alert threshold for Google Ads.',
+    time: '2 mins ago',
+    severity: 'warning',
+  },
+  {
+    id: 'notif-002',
+    title: 'New report ready',
+    message: 'Campaign Performance CSV is available for download.',
+    time: '1 hr ago',
+    severity: 'success',
   },
 ];

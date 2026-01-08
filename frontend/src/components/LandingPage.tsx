@@ -66,13 +66,13 @@ const LandingPage: React.FC = () => {
     { name: "Facebook Ads", icon: <Facebook className="h-6 w-6" />, color: "bg-blue-500" },
     { name: "Google Ads", icon: <Search className="h-6 w-6" />, color: "bg-green-500" },
     { name: "LINE Official", icon: <MessageCircle className="h-6 w-6" />, color: "bg-green-600" },
-    { name: "TikTok Business", icon: <Music className="h-6 w-6" />, color: "bg-black" },
+    { name: "TikTok Business", icon: <img src="https://cdn.simpleicons.org/tiktok/FFFFFF" className="h-6 w-6" alt="TikTok" />, color: "bg-black" },
     { name: "Shopee", icon: <ShoppingBag className="h-6 w-6" />, color: "bg-orange-500" }
   ];
 
   const stats = [
     { label: 'Active users', value: '10,000+', icon: <Users className="h-5 w-5" /> },
-    { label: 'Total revenue', value: 'THB 50M+', icon: <ShoppingCart className="h-5 w-5" /> },
+    { label: 'Total revenue', value: '$50M+', icon: <ShoppingCart className="h-5 w-5" /> },
     { label: 'Campaigns launched', value: '25,000+', icon: <Target className="h-5 w-5" /> },
     { label: 'Average ROI', value: '300%', icon: <TrendingUp className="h-5 w-5" /> }
   ];
@@ -270,28 +270,28 @@ const LandingPage: React.FC = () => {
             <div>
               <h3 className="font-semibold mb-4">Product</h3>
               <ul className="space-y-2 text-gray-400">
-                <li><a href="#" className="hover:text-white transition-colors">Dashboard</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Analytics</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Integrations</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">API</a></li>
+                <li><button type="button" className="hover:text-white transition-colors">Dashboard</button></li>
+                <li><button type="button" className="hover:text-white transition-colors">Analytics</button></li>
+                <li><button type="button" className="hover:text-white transition-colors">Integrations</button></li>
+                <li><button type="button" className="hover:text-white transition-colors">API</button></li>
               </ul>
             </div>
             <div>
               <h3 className="font-semibold mb-4">Company</h3>
               <ul className="space-y-2 text-gray-400">
-                <li><a href="#" className="hover:text-white transition-colors">About</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Contact</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Careers</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Press</a></li>
+                <li><button type="button" className="hover:text-white transition-colors">About</button></li>
+                <li><button type="button" className="hover:text-white transition-colors">Contact</button></li>
+                <li><button type="button" className="hover:text-white transition-colors">Careers</button></li>
+                <li><button type="button" className="hover:text-white transition-colors">Press</button></li>
               </ul>
             </div>
             <div>
               <h3 className="font-semibold mb-4">Support</h3>
               <ul className="space-y-2 text-gray-400">
-                <li><a href="#" className="hover:text-white transition-colors">Help Center</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Documentation</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">System Status</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Security</a></li>
+                <li><button type="button" className="hover:text-white transition-colors">Help Center</button></li>
+                <li><button type="button" className="hover:text-white transition-colors">Documentation</button></li>
+                <li><button type="button" className="hover:text-white transition-colors">System Status</button></li>
+                <li><button type="button" className="hover:text-white transition-colors">Security</button></li>
               </ul>
             </div>
             <div>
@@ -299,8 +299,8 @@ const LandingPage: React.FC = () => {
               <ul className="space-y-2 text-gray-400">
                 <li><a href="/terms" className="hover:text-white transition-colors">Terms & Conditions</a></li>
                 <li><a href="/privacy" className="hover:text-white transition-colors">Privacy Policy</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Cookie Policy</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">Acceptable Use</a></li>
+                <li><button type="button" className="hover:text-white transition-colors">Cookie Policy</button></li>
+                <li><button type="button" className="hover:text-white transition-colors">Acceptable Use</button></li>
               </ul>
             </div>
           </div>
@@ -309,7 +309,7 @@ const LandingPage: React.FC = () => {
             <div className="flex space-x-6 mt-4 md:mt-0">
               <a href="/terms" className="text-sm hover:text-white transition-colors">Terms</a>
               <a href="/privacy" className="text-sm hover:text-white transition-colors">Privacy</a>
-              <a href="#" className="text-sm hover:text-white transition-colors">Cookies</a>
+              <button type="button" className="text-sm hover:text-white transition-colors">Cookies</button>
             </div>
           </div>
         </div>

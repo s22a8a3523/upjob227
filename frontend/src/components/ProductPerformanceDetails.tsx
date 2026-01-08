@@ -151,7 +151,7 @@ const ProductPerformanceDetails: React.FC = () => {
                 {filteredAndSortedProducts.map((product) => (
                   <tr
                     key={product.name}
-                    className="hover:bg-gray-50 transition-colors cursor-pointer"
+                    className="hover:bg-gray-50 dark:hover:bg-white/5 transition-colors cursor-pointer"
                   >
                     <td className="px-6 py-4 text-sm font-semibold text-gray-900">{product.name}</td>
                     <td className="px-6 py-4 text-sm text-gray-600">{product.category}</td>
@@ -159,7 +159,7 @@ const ProductPerformanceDetails: React.FC = () => {
                       {product.sales.toLocaleString('en-US')}
                     </td>
                     <td className="px-6 py-4 text-sm text-right text-gray-900 font-medium">
-                      THB {product.revenue.toLocaleString('en-US')}
+                      ${product.revenue.toLocaleString('en-US')}
                     </td>
                     <td className="px-6 py-4 text-sm text-right text-gray-900 font-medium">{product.stock}</td>
                     <td className="px-6 py-4 text-center">
@@ -205,7 +205,7 @@ const ProductPerformanceDetails: React.FC = () => {
           <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm">
             <p className="text-xs font-semibold text-gray-500 uppercase mb-2">Total Revenue</p>
             <p className="text-2xl font-bold text-gray-900">
-              THB {filteredAndSortedProducts.reduce((sum, p) => sum + p.revenue, 0).toLocaleString('en-US')}
+              ${filteredAndSortedProducts.reduce((sum, p) => sum + p.revenue, 0).toLocaleString('en-US')}
             </p>
           </div>
           <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm">

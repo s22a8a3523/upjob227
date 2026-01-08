@@ -66,10 +66,10 @@ export const MetricsTable: React.FC<MetricsTableProps> = ({ metrics }) => {
                   {metric.conversions?.toLocaleString() || '-'}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {metric.spend ? `THB ${parseFloat(metric.spend).toFixed(2)}` : '-'}
+                  {metric.spend ? `$${parseFloat(metric.spend).toFixed(2)}` : '-'}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {metric.revenue ? `THB ${parseFloat(metric.revenue).toFixed(2)}` : '-'}
+                  {metric.revenue ? `$${parseFloat(metric.revenue).toFixed(2)}` : '-'}
                 </td>
               </tr>
             ))}
@@ -148,16 +148,16 @@ export const CampaignsTable: React.FC<CampaignsTableProps> = ({ campaigns }) => 
                     {campaign.objective || '-'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {campaign.budget ? `THB ${parseFloat(campaign.budget).toFixed(2)}/${campaign.budgetType}` : '-'}
+                    {campaign.budget ? `$${parseFloat(campaign.budget).toFixed(2)}/${campaign.budgetType}` : '-'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     {campaign.startDate ? format(new Date(campaign.startDate), 'MMM dd, yyyy') : '-'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    THB {totalSpend.toFixed(2)}
+                    ${totalSpend.toFixed(2)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    THB {totalRevenue.toFixed(2)}
+                    ${totalRevenue.toFixed(2)}
                   </td>
                 </tr>
               );

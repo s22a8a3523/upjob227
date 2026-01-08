@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { DashboardMetricPoint, Campaign } from '../types/api';
 import { mockDashboardMetrics, mockCampaigns } from '../data/mockDashboard';
 
@@ -11,7 +11,9 @@ export const useMetrics = (filters?: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchMetrics = () => {
+  const filtersKey = useMemo(() => JSON.stringify(filters ?? {}), [filters]);
+
+  const fetchMetrics = useCallback(() => {
     setLoading(true);
     setError(null);
     try {
@@ -21,11 +23,11 @@ export const useMetrics = (filters?: {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchMetrics();
-  }, [JSON.stringify(filters)]);
+  }, [fetchMetrics, filtersKey]);
 
   return { metrics, loading, error, refetch: fetchMetrics };
 };
@@ -35,7 +37,7 @@ export const useCampaigns = (platform?: string) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchCampaigns = () => {
+  const fetchCampaigns = useCallback(() => {
     setLoading(true);
     setError(null);
     try {
@@ -46,11 +48,11 @@ export const useCampaigns = (platform?: string) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [platform]);
 
   useEffect(() => {
     fetchCampaigns();
-  }, [platform]);
+  }, [fetchCampaigns]);
 
   return { campaigns, loading, error, refetch: fetchCampaigns };
 };

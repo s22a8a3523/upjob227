@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { LogOut, MessageCircle, Send } from 'lucide-react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
+import { LogOut, Menu, MessageCircle, Send, X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useCurrentUser } from '../../hooks/useCurrentUser'
 import LogoRga from '../../image/LOGO-RGA-B.png'
@@ -27,7 +27,7 @@ export interface ThemeTokens {
   sectionTo: string
   border: string
   cardShadow: string
-  mode: 'light' | 'dark' | 'canvas'
+  mode: 'light' | 'dark'
 }
 
 interface DashboardShellProps {
@@ -72,6 +72,7 @@ const DashboardShell: React.FC<DashboardShellProps> = ({
   const [openDropdown, setOpenDropdown] = useState<string | null>(null)
   const [miniChatInput, setMiniChatInput] = useState('')
   const [miniChatTyping, setMiniChatTyping] = useState(false)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const miniChatScrollRef = useRef<HTMLDivElement | null>(null)
   
   // Draggable FAB state
@@ -129,6 +130,15 @@ const DashboardShell: React.FC<DashboardShellProps> = ({
     }
   }, [miniChatMessages, miniChatTyping])
 
+  useEffect(() => {
+    if (!mobileMenuOpen) return
+    const original = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = original
+    }
+  }, [mobileMenuOpen])
+
   // Apply theme tokens to CSS variables so index.css themed classes can react
   useEffect(() => {
     if (!theme) return
@@ -163,8 +173,8 @@ const DashboardShell: React.FC<DashboardShellProps> = ({
     }
   }
 
-  const handleMouseMove = (e: MouseEvent) => {
-    if (!isDragging) return
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!isDragging || !fabRef.current) return
     
     // Calculate new position based on mouse position and drag offset
     const newX = e.clientX - dragStart.x
@@ -192,11 +202,11 @@ const DashboardShell: React.FC<DashboardShellProps> = ({
       x: boundedX - (window.innerWidth - originalRight - fabWidth), 
       y: boundedY - (window.innerHeight - originalBottom - fabHeight)
     })
-  }
+  }, [dragStart, isDragging])
 
-  const handleMouseUp = () => {
+  const handleMouseUp = useCallback(() => {
     setIsDragging(false)
-  }
+  }, [])
 
   useEffect(() => {
     if (isDragging) {
@@ -207,7 +217,7 @@ const DashboardShell: React.FC<DashboardShellProps> = ({
         document.removeEventListener('mouseup', handleMouseUp)
       }
     }
-  }, [isDragging, dragStart])
+  }, [handleMouseMove, handleMouseUp, isDragging])
 
   const clearChatHistory = () => {
     setMiniChatMessages([
@@ -268,19 +278,223 @@ const DashboardShell: React.FC<DashboardShellProps> = ({
   const modeClass =
     theme?.mode === 'dark'
       ? 'theme-dark'
-      : theme?.mode === 'canvas'
-      ? 'theme-canvas'
       : 'theme-light'
 
   const isDark = theme?.mode === 'dark'
+
+  const sidebarContent = (
+    <>
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <img
+            src={LogoRga}
+            alt="RGA Logo"
+            className="h-16 w-auto drop-shadow-[0_0_22px_rgba(249,115,22,0.95)]"
+          />
+        </div>
+      </div>
+
+      <div
+        className="rounded-2xl p-5 space-y-3 shadow-inner border"
+        style={{
+          backgroundColor: theme?.menuFrom,
+          borderColor: 'var(--menu-text)',
+        }}
+      >
+        <p className="text-xs uppercase tracking-wider mb-3" style={{ color: 'var(--menu-text)' }}>
+          Profile
+        </p>
+        <div className="flex items-start gap-3">
+          <button
+            type="button"
+            className="relative h-12 w-12 rounded-2xl overflow-hidden bg-white/10 cursor-pointer"
+            onClick={() => {
+              if (onProfileClick) {
+                onProfileClick()
+              } else {
+                avatarInputRef.current?.click()
+              }
+              setMobileMenuOpen(false)
+            }}
+            title="Change profile photo"
+          >
+            {resolvedAvatarUrl ? (
+              <img src={resolvedAvatarUrl} alt={displayName} className="h-full w-full object-cover" />
+            ) : (
+              <div className="h-full w-full flex items-center justify-center text-lg font-bold">{displayName.charAt(0)}</div>
+            )}
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleAvatarSelect}
+            />
+          </button>
+          <div className="flex flex-col justify-center mt-1">
+            <p className="text-base font-semibold leading-none mb-2" style={{ color: 'var(--menu-text)' }}>
+              {loading ? 'Loading…' : displayName}
+            </p>
+            <p className="truncate leading-none mt-0.5" style={{ fontSize: '12px', color: 'var(--menu-text)' }}>
+              {displayEmail}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <nav className="flex-1 flex flex-col">
+        <div className="space-y-2">
+          {menuItems.map((item) => {
+            const hasChildren = !!item.children?.length
+            const expanded = hasChildren && openDropdown === item.label
+            const handleClick = () => {
+              item.onClick?.()
+              if (hasChildren) {
+                setOpenDropdown((prev) => (prev === item.label ? null : item.label))
+              } else {
+                setOpenDropdown(null)
+                setMobileMenuOpen(false)
+              }
+            }
+            return (
+              <div key={item.label} className="space-y-2 relative">
+                <button
+                  className={cn(
+                    'w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all text-left text-[13px] font-semibold tracking-wide',
+                    item.active ? 'shadow-lg' : 'hover:bg-black/10',
+                  )}
+                  style={
+                    item.active && theme?.menuTo
+                      ? { backgroundColor: theme.menuTo, color: 'var(--menu-text)' }
+                      : { color: 'var(--menu-text)' }
+                  }
+                  onClick={handleClick}
+                >
+                  <span className="flex items-center gap-3">
+                    <span className="text-lg">{item.icon}</span>
+                    <span className="truncate">{item.label}</span>
+                  </span>
+                  {hasChildren && (
+                    <span className="text-sm" style={{ color: 'var(--menu-text)' }}>
+                      {expanded ? '–' : '+'}
+                    </span>
+                  )}
+                </button>
+                <div
+                  className={cn(
+                    'overflow-hidden transition-all duration-300',
+                    expanded ? 'max-h-96 opacity-100 translate-y-0' : 'max-h-0 opacity-0 -translate-y-2',
+                  )}
+                >
+                  {hasChildren && (
+                    <div
+                      className="mt-2 rounded-2xl p-3 space-y-1 shadow-2xl"
+                      style={{
+                        backgroundColor: theme?.menuFrom,
+                        borderColor: 'var(--menu-text)',
+                        borderWidth: 1,
+                        borderStyle: 'solid',
+                      }}
+                    >
+                      {item.children?.map((child) => (
+                        <button
+                          key={child.label}
+                          className={cn(
+                            'w-full text-left text-sm transition px-3 py-2 rounded-xl cursor-pointer hover:translate-x-0.5',
+                            isDark ? 'hover:bg-white/30' : 'hover:bg-black/10',
+                          )}
+                          style={{ color: 'var(--menu-text)' }}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            child.onClick?.()
+                            setMobileMenuOpen(false)
+                          }}
+                        >
+                          {child.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        {menuDescription && (
+          <div
+            className="mt-4 rounded-2xl bg-gradient-to-br p-4 space-y-1 text-sm shadow-inner"
+            style={{
+              backgroundImage:
+                theme?.menuFrom && theme?.menuTo ? `linear-gradient(135deg, ${theme.menuFrom}, ${theme.menuTo})` : undefined,
+              borderColor: 'var(--menu-text)',
+              borderWidth: 1,
+              borderStyle: 'solid',
+              color: 'var(--menu-text)',
+            }}
+          >
+            <p className="text-xs uppercase tracking-[0.3em]">{menuDescription.title}</p>
+            <p className="text-[13px] leading-relaxed">{menuDescription.description}</p>
+          </div>
+        )}
+
+        <button
+          className="mt-6 w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[16px] font-semibold tracking-wide transition"
+          style={{ color: 'var(--menu-text)' }}
+          onClick={() => {
+            onLogout?.()
+            setMobileMenuOpen(false)
+          }}
+        >
+          <LogOut className="h-4 w-4" />
+          Log out
+        </button>
+      </nav>
+    </>
+  )
 
   return (
     <div
       className={cn('min-h-screen dashboard-theme flex', modeClass)}
       style={{ backgroundColor: theme?.background }}
     >
+      <div className={cn('fixed inset-0 z-40 lg:hidden', mobileMenuOpen ? 'pointer-events-auto' : 'pointer-events-none')}>
+        <div
+          className={cn(
+            'absolute inset-0 bg-black/40 transition-opacity',
+            mobileMenuOpen ? 'opacity-100' : 'opacity-0',
+          )}
+          onClick={() => setMobileMenuOpen(false)}
+        />
+        <aside
+          className={cn(
+            'dashboard-sidebar absolute left-0 top-0 h-full w-[280px] max-w-[85vw] bg-gradient-to-b text-white px-3 py-4 space-y-6 overflow-y-auto transition-transform duration-300',
+            mobileMenuOpen ? 'translate-x-0' : '-translate-x-full',
+          )}
+          style={{
+            backgroundImage:
+              theme?.menuFrom && theme?.menuTo ? `linear-gradient(to bottom, ${theme.menuFrom}, ${theme.menuTo})` : undefined,
+          }}
+        >
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold" style={{ color: 'var(--menu-text)' }}>
+              Menu
+            </div>
+            <button
+              type="button"
+              className="rounded-xl p-2 hover:bg-white/10"
+              onClick={() => setMobileMenuOpen(false)}
+              aria-label="Close menu"
+            >
+              <X className="h-5 w-5" style={{ color: 'var(--menu-text)' }} />
+            </button>
+          </div>
+          {sidebarContent}
+        </aside>
+      </div>
+
       <aside
-        className="hidden xl:flex flex-col w-[280px] min-w-[260px] bg-gradient-to-b text-white px-3 py-4 space-y-6 sticky top-0 h-screen overflow-y-auto"
+        className="dashboard-sidebar hidden lg:flex flex-col w-[280px] min-w-[260px] bg-gradient-to-b text-white px-3 py-4 space-y-6 sticky top-0 h-screen overflow-y-auto"
         style={{
           backgroundImage:
             theme?.menuFrom && theme?.menuTo
@@ -288,182 +502,10 @@ const DashboardShell: React.FC<DashboardShellProps> = ({
               : undefined,
         }}
       >
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <img
-              src={LogoRga}
-              alt="RGA Logo"
-              className="h-16 w-auto drop-shadow-[0_0_22px_rgba(249,115,22,0.95)]"
-            />
-          </div>
-        </div>
-
-        <div
-          className="rounded-2xl p-5 space-y-3 shadow-inner border"
-          style={{
-            backgroundColor: theme?.menuFrom,
-            borderColor: 'var(--menu-text)',
-          }}
-        >
-          <p
-            className="text-xs uppercase tracking-wider mb-3"
-            style={{ color: 'var(--menu-text)' }}
-          >
-            Profile
-          </p>
-          <div className="flex items-start gap-3">
-            <button
-              type="button"
-              className="relative h-12 w-12 rounded-2xl overflow-hidden bg-white/10 cursor-pointer"
-              onClick={() => {
-                if (onProfileClick) {
-                  onProfileClick()
-                } else {
-                  avatarInputRef.current?.click()
-                }
-              }}
-              title="Change profile photo"
-            >
-              {resolvedAvatarUrl ? (
-                <img src={resolvedAvatarUrl} alt={displayName} className="h-full w-full object-cover" />
-              ) : (
-                <div className="h-full w-full flex items-center justify-center text-lg font-bold">
-                  {displayName.charAt(0)}
-                </div>
-              )}
-              <input
-                ref={avatarInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleAvatarSelect}
-              />
-            </button>
-            <div className="flex flex-col justify-center mt-1">
-              <p
-                className="text-base font-semibold leading-none mb-2"
-                style={{ color: 'var(--menu-text)' }}
-              >
-                {loading ? 'Loading…' : displayName}
-              </p>
-              <p
-                className="truncate leading-none mt-0.5"
-                style={{ fontSize: '12px', color: 'var(--menu-text)' }}
-              >
-                {displayEmail}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <nav className="flex-1 flex flex-col">
-          <div className="space-y-2">
-            {menuItems.map((item) => {
-              const hasChildren = !!item.children?.length
-              const expanded = hasChildren && openDropdown === item.label
-              const handleClick = () => {
-                item.onClick?.()
-                if (hasChildren) {
-                  setOpenDropdown((prev) => (prev === item.label ? null : item.label))
-                } else {
-                  setOpenDropdown(null)
-                }
-              }
-              return (
-                <div key={item.label} className="space-y-2 relative">
-                  <button
-                    className={cn(
-                      'w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all text-left text-[13px] font-semibold tracking-wide',
-                      item.active ? 'shadow-lg' : 'hover:bg-black/10',
-                    )}
-                    style={
-                      item.active && theme?.menuTo
-                        ? { backgroundColor: theme.menuTo, color: 'var(--menu-text)' }
-                        : { color: 'var(--menu-text)' }
-                    }
-                    onClick={handleClick}
-                  >
-                    <span className="flex items-center gap-3">
-                      <span className="text-lg">{item.icon}</span>
-                      <span className="truncate">{item.label}</span>
-                    </span>
-                    {hasChildren && (
-                      <span
-                        className="text-sm"
-                        style={{ color: 'var(--menu-text)' }}
-                      >
-                        {expanded ? '–' : '+'}
-                      </span>
-                    )}
-                  </button>
-                  <div
-                    className={cn(
-                      'overflow-hidden transition-all duration-300',
-                      expanded ? 'max-h-96 opacity-100 translate-y-0' : 'max-h-0 opacity-0 -translate-y-2',
-                    )}
-                  >
-                    {hasChildren && (
-                      <div
-                        className="mt-2 rounded-2xl p-3 space-y-1 shadow-2xl"
-                        style={{
-                          backgroundColor: theme?.menuFrom,
-                          borderColor: 'var(--menu-text)',
-                          borderWidth: 1,
-                          borderStyle: 'solid',
-                        }}
-                      >
-                        {item.children?.map((child) => (
-                          <button
-                            key={child.label}
-                            className="w-full text-left text-sm transition px-3 py-2 rounded-xl hover:translate-x-0.5"
-                            style={{ color: 'var(--menu-text)' }}
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              child.onClick?.()
-                            }}
-                          >
-                            {child.label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-
-          {menuDescription && (
-            <div
-              className="mt-4 rounded-2xl bg-gradient-to-br p-4 space-y-1 text-sm shadow-inner"
-              style={{
-                backgroundImage:
-                  theme?.menuFrom && theme?.menuTo
-                    ? `linear-gradient(135deg, ${theme.menuFrom}, ${theme.menuTo})`
-                    : undefined,
-                borderColor: 'var(--menu-text)',
-                borderWidth: 1,
-                borderStyle: 'solid',
-                color: 'var(--menu-text)',
-              }}
-            >
-              <p className="text-xs uppercase tracking-[0.3em]">{menuDescription.title}</p>
-              <p className="text-[13px] leading-relaxed">{menuDescription.description}</p>
-            </div>
-          )}
-
-          <button
-            className="mt-6 w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[16px] font-semibold tracking-wide transition"
-            style={{ color: 'var(--menu-text)' }}
-            onClick={onLogout}
-          >
-            <LogOut className="h-4 w-4" />
-            Log out
-          </button>
-        </nav>
+        {sidebarContent}
       </aside>
 
-      <main className="flex-1 p-6 lg:p-10 space-y-8 max-w-[calc(100vw-280px)]">
+      <main className="flex-1 w-full p-6 lg:p-10 space-y-8 max-w-full lg:max-w-[calc(100vw-280px)]">
         <div className="sticky top-0 z-30">
           <div
             className="backdrop-blur border-b border-orange-100/60 shadow-sm -mx-6 lg:-mx-10 px-6 lg:px-10 py-4"
@@ -476,6 +518,14 @@ const DashboardShell: React.FC<DashboardShellProps> = ({
                 <p className="text-base text-gray-500 max-w-2xl">{subtitle}</p>
               </div>
               <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  className="lg:hidden inline-flex items-center justify-center rounded-full border border-gray-200 bg-white p-3 text-gray-700 shadow-sm hover:shadow-md transition"
+                  onClick={() => setMobileMenuOpen(true)}
+                  aria-label="Open menu"
+                >
+                  <Menu className="h-5 w-5" />
+                </button>
                 {actions}
                 
               </div>
